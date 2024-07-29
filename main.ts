@@ -153,7 +153,7 @@ export default class EpiphanyPlugin extends Plugin {
               );
               await this.updateNote(upload.id);
             } else {
-              await this.modifyFile(upload, upload.fileName);
+              await this.modifyFile(upload, 'Epiphany notes.md');
             }
           }
         });
@@ -219,9 +219,6 @@ export default class EpiphanyPlugin extends Plugin {
     if (this.settings.jwtToken && this.settings.jwtToken !== '') {
       const vault_path = this.getVaultPath();
       const vault_name = this.app.vault.getName();
-      const files = this.app.vault.getMarkdownFiles().map((file) => {
-        return { name: file.name, path: file.path };
-      });
 
       const url = `${this.settings.baseUrl}/api/uploads/obsidian/update-vault`;
       const options: RequestUrlParam = {
@@ -231,7 +228,7 @@ export default class EpiphanyPlugin extends Plugin {
           Authorization: `Bearer ${this.settings.jwtToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ files, vault_name, vault_path }),
+        body: JSON.stringify({ vault_name, vault_path }),
       };
 
       try {
@@ -249,25 +246,20 @@ export default class EpiphanyPlugin extends Plugin {
     }
   }
 
-
   async onload() {
     await this.loadSettings();
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.jwtToken && this.settings.jwtToken !== '') {
         this.fetchNotes();
+        let combinedFile = await this.app.vault.getFileByPath('Epiphany notes.md');
+
+        if (!combinedFile) {
+          combinedFile = await this.app.vault.create('Epiphany notes.md', '');
+        }
       } else if (!this.isLoginOpen) {
         this.openEmailView();
       }
       await this.updateFiles();
-      this.registerEvent(
-        this.app.vault.on('create', async () => await this.updateFiles())
-      );
-      this.registerEvent(
-        this.app.vault.on('delete', async () => await this.updateFiles())
-      );
-      this.registerEvent(
-        this.app.vault.on('rename', async () => await this.updateFiles())
-      );
     });
 
     this.registerView(
