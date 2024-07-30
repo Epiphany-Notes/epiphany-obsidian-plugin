@@ -34,6 +34,7 @@ type Upload = {
   createSeparate?: boolean;
   fileName: string;
   vaultPath: string;
+  includeAudioAttachment: boolean;
 };
 
 export default class EpiphanyPlugin extends Plugin {
@@ -149,7 +150,11 @@ export default class EpiphanyPlugin extends Plugin {
             if (upload.createSeparate) {
               await this.app.vault.create(
                 `${upload.label}.md`,
-                `${upload.transcription} \n [audio](${upload.url})`
+                `${upload.transcription} ${
+                  upload.includeAudioAttachment
+                    ? `\n [audio](${upload.url}`
+                    : ''
+                })`
               );
               await this.updateNote(upload.id);
             } else {
@@ -175,7 +180,9 @@ export default class EpiphanyPlugin extends Plugin {
 
     let combinedContent = await this.app.vault.read(combinedFile);
 
-    const noteContent = `\n\n ## ${upload.label} \n ${upload.transcription} \n [audio](${upload.url})`;
+    const noteContent = `\n\n ## ${upload.label} \n ${upload.transcription} ${
+      upload.includeAudioAttachment ? `\n [audio](${upload.url}` : ''
+    })`;
     combinedContent += noteContent;
     await this.updateNote(upload.id);
 
@@ -251,7 +258,9 @@ export default class EpiphanyPlugin extends Plugin {
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.jwtToken && this.settings.jwtToken !== '') {
         this.fetchNotes();
-        let combinedFile = await this.app.vault.getFileByPath('Epiphany notes.md');
+        let combinedFile = await this.app.vault.getFileByPath(
+          'Epiphany notes.md'
+        );
 
         if (!combinedFile) {
           combinedFile = await this.app.vault.create('Epiphany notes.md', '');
