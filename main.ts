@@ -182,7 +182,7 @@ export default class EpiphanyPlugin extends Plugin {
 
     const noteContent = `\n\n ## ${upload.label} \n ${upload.transcription} ${
       upload.includeAudioAttachment ? `\n [audio](${upload.url}` : ''
-    })`;
+    }`;
     combinedContent += noteContent;
     await this.updateNote(upload.id);
 
