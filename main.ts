@@ -126,7 +126,8 @@ export default class EpiphanyPlugin extends Plugin {
   }
 
   async fetchNotes() {
-    const url = `${this.settings.baseUrl}/api/uploads/obsidian`;
+    const vaultName = this.app.vault.getName()
+    const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
     const options: RequestUrlParam = {
       url: url,
       method: 'GET',
@@ -152,9 +153,9 @@ export default class EpiphanyPlugin extends Plugin {
                 `${upload.label}.md`,
                 `${upload.transcription} ${
                   upload.includeAudioAttachment
-                    ? `\n [audio](${upload.url}`
+                    ? `\n [audio](${upload.url})`
                     : ''
-                })`
+                }`
               );
               await this.updateNote(upload.id);
             } else {
@@ -181,7 +182,7 @@ export default class EpiphanyPlugin extends Plugin {
     let combinedContent = await this.app.vault.read(combinedFile);
 
     const noteContent = `\n\n ## ${upload.label} \n ${upload.transcription} ${
-      upload.includeAudioAttachment ? `\n [audio](${upload.url}` : ''
+      upload.includeAudioAttachment ? `\n [audio](${upload.url})` : ''
     }`;
     combinedContent += noteContent;
     await this.updateNote(upload.id);
