@@ -1,11 +1,11 @@
 import {
   App,
   FileSystemAdapter,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
   RequestUrlParam,
-  Setting,
   WorkspaceLeaf,
   request,
 } from 'obsidian';
@@ -15,13 +15,15 @@ import { OTPView, VIEW_TYPE_OTP } from './otp-view';
 interface EpiphanySettings {
   baseUrl: string;
   jwtToken: string | null;
-  createSeparateNotes: boolean;
+  vaultId: string | null;
+  vaultName: string | null;
 }
 
 const DEFAULT_SETTINGS: EpiphanySettings = {
   baseUrl: 'https://api-v2.epiphanyvoice.app',
   jwtToken: null,
-  createSeparateNotes: false,
+  vaultId: null,
+  vaultName: null,
 };
 
 type Upload = {
@@ -126,28 +128,28 @@ export default class EpiphanyPlugin extends Plugin {
   }
 
   async fetchNotes() {
-    const vaultName = this.app.vault.getName()
-    const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.settings.jwtToken}`,
-        'ngrok-skip-browser-warning': '69420',
-      },
-    };
+    const vaultName = this.settings.vaultName;
+    if (vaultName) {
+      const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
+      const options: RequestUrlParam = {
+        url: url,
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.settings.jwtToken}`,
+          'ngrok-skip-browser-warning': '69420',
+        },
+      };
 
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
+      try {
+        const response = await request(options);
+        const res = JSON.parse(response);
 
-      if (res.error) {
-        throw new Error(res.message);
-      }
-      if (res.length !== 0) {
-        res.forEach(async (upload: Upload) => {
-          if (upload.vaultPath === this.getVaultPath()) {
+        if (res.error) {
+          throw new Error(res.message);
+        }
+        if (res.length !== 0) {
+          res.forEach(async (upload: Upload) => {
             if (upload.createSeparate) {
               await this.app.vault.create(
                 `${upload.label}.md`,
@@ -161,13 +163,13 @@ export default class EpiphanyPlugin extends Plugin {
             } else {
               await this.modifyFile(upload, 'Epiphany notes.md');
             }
-          }
-        });
-      } else {
-        return;
+          });
+        } else {
+          return;
+        }
+      } catch (err) {
+        new Notice(err.message || 'Unknown error');
       }
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
     }
   }
 
@@ -223,10 +225,60 @@ export default class EpiphanyPlugin extends Plugin {
     }
   }
 
+  syncVault = async (vaultName?: string) => {
+    if (this.settings.jwtToken && this.settings.jwtToken !== '') {
+      const vault_path = this.getVaultPath();
+      const vault_name = vaultName || this.app.vault.getName();
+
+      const url = `${this.settings.baseUrl}/api/uploads/obsidian/sync-vault`;
+      const options: RequestUrlParam = {
+        url: url,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.settings.jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ vault_name, vault_path }),
+      };
+
+      try {
+        const response = await request(options);
+        const res = JSON.parse(response);
+
+        if (res.error) {
+          throw new Error(res.message);
+        }
+        if (res.isUnique) {
+          this.settings.vaultId = res.id;
+          this.settings.vaultName = vault_name;
+          await this.saveSettings();
+        } else {
+          new VaultConflictModal(
+            this.app,
+            vault_name,
+            res.id,
+            this.saveModalResults,
+            this.syncVault
+          ).open();
+        }
+      } catch (err) {
+        new Notice(err.message || 'Unknown error');
+      }
+    } else if (!this.isLoginOpen) {
+      this.openEmailView();
+    }
+  }
+
+  saveModalResults = async (vaultName: string, vaultId: string) => {
+    this.settings.vaultId = vaultId;
+    this.settings.vaultName = vaultName;
+    await this.saveSettings();
+  }
+
   async updateFiles() {
     if (this.settings.jwtToken && this.settings.jwtToken !== '') {
       const vault_path = this.getVaultPath();
-      const vault_name = this.app.vault.getName();
+      const vault_name = this.settings.vaultName;
 
       const url = `${this.settings.baseUrl}/api/uploads/obsidian/update-vault`;
       const options: RequestUrlParam = {
@@ -236,7 +288,11 @@ export default class EpiphanyPlugin extends Plugin {
           Authorization: `Bearer ${this.settings.jwtToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ vault_name, vault_path }),
+        body: JSON.stringify({
+          vault_name,
+          vault_path,
+          vault_id: this.settings.vaultId,
+        }),
       };
 
       try {
@@ -257,6 +313,12 @@ export default class EpiphanyPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.app.workspace.onLayoutReady(async () => {
+      if (this.settings.vaultId && this.settings.vaultName) {
+        await this.updateFiles();
+      } else {
+        await this.syncVault();
+      }
+
       if (this.settings.jwtToken && this.settings.jwtToken !== '') {
         this.fetchNotes();
         let combinedFile = await this.app.vault.getFileByPath(
@@ -269,7 +331,6 @@ export default class EpiphanyPlugin extends Plugin {
       } else if (!this.isLoginOpen) {
         this.openEmailView();
       }
-      await this.updateFiles();
     });
 
     this.registerView(
@@ -324,17 +385,81 @@ class EpiphanySettingTab extends PluginSettingTab {
     const { containerEl } = this;
 
     containerEl.empty();
+  }
+}
 
-    new Setting(containerEl)
-      .setName('Create separate notes')
-      .setDesc('Create separate file for each epiphany note')
-      .addToggle((value) =>
-        value
-          .setValue(this.plugin.settings.createSeparateNotes)
-          .onChange(async (value) => {
-            this.plugin.settings.createSeparateNotes = value;
-            await this.plugin.saveSettings();
-          })
-      );
+class VaultConflictModal extends Modal {
+  vaultName: string;
+  resId: string;
+  saveResults: (vaultName: string, vaultId: string) => Promise<void>;
+  syncVault: (vaultName: string) => Promise<void>;
+
+  constructor(
+    app: App,
+    vaultName: string,
+    resId: string,
+    saveResults: (vaultName: string, vaultId: string) => Promise<void>,
+    syncVault: (vaultName: string) => Promise<void>
+  ) {
+    super(app);
+    this.vaultName = vaultName;
+    this.resId = resId;
+    this.saveResults = saveResults;
+    this.syncVault = syncVault
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+
+    contentEl.createEl('h2', { text: 'Epiphany Vault Conflict Detected' });
+
+    contentEl.createEl('p', {
+      text: `While trying to sync your vault, we found a vault with the name "${this.vaultName}" already existing.`,
+    });
+
+    const option1 = contentEl.createEl('button', {
+      text: 'Sync with Existing Vault',
+    });
+    option1.onclick = async () => {
+      new Notice('Syncing with existing vault...');
+      this.saveResults(this.vaultName, this.resId)
+      this.close();
+    };
+
+    const option2 = contentEl.createEl('button', {
+      text: 'Create New Vault with Different Name',
+    });
+    option2.onclick = () => {
+      this.showVaultNameInput();
+    };
+  }
+
+  showVaultNameInput() {
+    const { contentEl } = this;
+    contentEl.empty();
+
+    contentEl.createEl('h2', { text: 'Create New Vault' });
+
+    const input = contentEl.createEl('input', {
+      type: 'text',
+      placeholder: 'Enter new vault name',
+    });
+
+    const submitBtn = contentEl.createEl('button', { text: 'Create Vault' });
+    submitBtn.onclick = () => {
+      const newName = input.value;
+      if (newName) {
+        new Notice(`Creating vault with name: ${newName}`);
+        this.syncVault(newName)
+        this.close();
+      } else {
+        new Notice('Please enter a valid vault name.');
+      }
+    };
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
   }
 }
