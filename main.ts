@@ -313,9 +313,7 @@ export default class EpiphanyPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.app.workspace.onLayoutReady(async () => {
-      if (this.settings.vaultId && this.settings.vaultName) {
-        await this.updateFiles();
-      } else {
+      if (!this.settings.vaultId && !this.settings.vaultName) {
         await this.syncVault();
       }
 
