@@ -150,7 +150,7 @@ export default class EpiphanyPlugin extends Plugin {
           throw new Error(res.message);
         }
         if (res.length !== 0) {
-          res.forEach(async (upload: Upload) => {
+          for (const upload of res) {
             if (upload.createSeparate) {
               await this.app.vault.create(
                 `${upload.label}.md`,
@@ -164,7 +164,7 @@ export default class EpiphanyPlugin extends Plugin {
             } else {
               await this.modifyFile(upload, 'Epiphany notes.md');
             }
-          });
+          }
         } else {
           return;
         }
