@@ -1,11 +1,9 @@
 {
-	"id": "epiphany-plugin",
-	"name": "Epiphany Plugin",
+	"id": "epiphany",
+	"name": "Epiphany",
 	"version": "1.0.9",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Synchronize voice notes from the Epiphany app directly into your Obsidian vault",
+	"author": "Epiphany",
 	"isDesktopOnly": false
 }

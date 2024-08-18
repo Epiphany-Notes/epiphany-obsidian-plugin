@@ -44,6 +44,26 @@ export default class EpiphanyPlugin extends Plugin {
   private authRequestId: string | null = null;
   private isLoginOpen = false;
 
+  async grafanaLog(type: 'log' | 'error', message: string) {
+    const url = `${this.settings.baseUrl}/api/grafana/${
+      type === 'log' ? 'log' : 'error'
+    }`;
+    const options: RequestUrlParam = {
+      url: url,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
+    };
+
+    try {
+      await request(options);
+    } catch (err) {
+      new Notice(err.message || 'Unknown error');
+    }
+  }
+
   async openEmailView() {
     this.isLoginOpen = true;
     const leaf = this.app.workspace.getLeaf(true);
@@ -152,14 +172,31 @@ export default class EpiphanyPlugin extends Plugin {
         if (res.length !== 0) {
           for (const upload of res) {
             if (upload.createSeparate) {
-              await this.app.vault.create(
-                `${upload.label}.md`,
-                `${upload.transcription} ${
-                  upload.includeAudioAttachment
-                    ? `\n [audio](${upload.url})`
-                    : ''
-                }`
+              const combinedFilePath = `${upload.label}.md`;
+              const combinedFile = await this.app.vault.getFileByPath(
+                combinedFilePath
               );
+
+              if (!combinedFile) {
+                await this.app.vault.create(
+                  `${upload.label}.md`,
+                  `${upload.transcription} ${
+                    upload.includeAudioAttachment
+                      ? `\n [audio](${upload.url})`
+                      : ''
+                  }`
+                );
+              } else {
+                await this.app.vault.create(
+                  `${upload.label} - ${upload.syncId}.md`,
+                  `${upload.transcription} ${
+                    upload.includeAudioAttachment
+                      ? `\n [audio](${upload.url})`
+                      : ''
+                  }`
+                );
+              }
+
               await this.updateNote(upload.id);
             } else {
               await this.modifyFile(upload, 'Epiphany notes.md');
@@ -169,6 +206,7 @@ export default class EpiphanyPlugin extends Plugin {
           return;
         }
       } catch (err) {
+        this.grafanaLog('error', `obsidian-plugin: ${err.message}`);
         new Notice(err.message || 'Unknown error');
       }
     }
@@ -263,18 +301,19 @@ export default class EpiphanyPlugin extends Plugin {
           ).open();
         }
       } catch (err) {
+        this.grafanaLog('error', `obsidian-plugin: ${err.message}`);
         new Notice(err.message || 'Unknown error');
       }
     } else if (!this.isLoginOpen) {
       this.openEmailView();
     }
-  }
+  };
 
   saveModalResults = async (vaultName: string, vaultId: string) => {
     this.settings.vaultId = vaultId;
     this.settings.vaultName = vaultName;
     await this.saveSettings();
-  }
+  };
 
   async updateFiles() {
     if (this.settings.jwtToken && this.settings.jwtToken !== '') {
@@ -404,11 +443,20 @@ class VaultConflictModal extends Modal {
     this.vaultName = vaultName;
     this.resId = resId;
     this.saveResults = saveResults;
-    this.syncVault = syncVault
+    this.syncVault = syncVault;
   }
 
   onOpen() {
     const { contentEl } = this;
+
+    const style = document.createElement('style');
+    style.textContent = `
+      button{
+      cursor: pointer;
+      margin: 5px
+      }
+    `;
+    contentEl.appendChild(style);
 
     contentEl.createEl('h2', { text: 'Epiphany Vault Conflict Detected' });
 
@@ -421,7 +469,7 @@ class VaultConflictModal extends Modal {
     });
     option1.onclick = async () => {
       new Notice('Syncing with existing vault...');
-      this.saveResults(this.vaultName, this.resId)
+      this.saveResults(this.vaultName, this.resId);
       this.close();
     };
 
@@ -449,7 +497,7 @@ class VaultConflictModal extends Modal {
       const newName = input.value;
       if (newName) {
         new Notice(`Creating vault with name: ${newName}`);
-        this.syncVault(newName)
+        this.syncVault(newName);
         this.close();
       } else {
         new Notice('Please enter a valid vault name.');
