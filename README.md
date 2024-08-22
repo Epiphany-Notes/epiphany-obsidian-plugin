@@ -1,13 +1,13 @@
-# Epiphany Plugin for Obsidian
+# Epiphany Plugin
 
-**Epiphany Plugin** is an Obsidian plugin that allows you to synchronize your voice notes recorded in the Epiphany Voice app directly into your Obsidian vault. This plugin ensures your voice notes are seamlessly integrated into your knowledge base by importing transcriptions and audio links from the Epiphany service.
+**Epiphany Plugin** is a plugin that allows you to synchronize your voice notes recorded in the Epiphany Voice app directly into your vault. This plugin ensures your voice notes are seamlessly integrated into your knowledge base by importing transcriptions and audio links from the Epiphany service.
 
 ## Features
 
-- **Voice Note Synchronization**: Automatically sync voice notes and their transcriptions from the Epiphany Voice app into your Obsidian vault.
+- **Voice Note Synchronization**: Automatically sync voice notes and their transcriptions from the Epiphany Voice app into your vault.
 - **Email and OTP Authentication**: Securely log in to the Epiphany service using email and OTP authentication.
 - **Vault Conflict Management**: Resolve conflicts if a vault with the same name already exists on the Epiphany service.
-- **Automatic Fetching**: Periodically fetch new voice notes from the Epiphany service and update your Obsidian vault.
+- **Automatic Fetching**: Periodically fetch new voice notes from the Epiphany service and update your vault.
 
 ## Usage
 
@@ -33,7 +33,7 @@ After authentication, the plugin will automatically sync your vault with voice n
 - If there is a conflict with an existing vault name, you will be prompted to either sync with the existing vault or create a new one.
 
 #### Periodic Fetching
-The plugin will periodically check for new voice notes on the Epiphany service and update your Obsidian vault. You can also manually trigger a sync via the command palette.
+The plugin will periodically check for new voice notes on the Epiphany service and update your vault. You can also manually trigger a sync via the command palette.
 
 ### Vault Conflict Resolution
 
