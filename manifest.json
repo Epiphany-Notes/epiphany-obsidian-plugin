@@ -3,7 +3,7 @@
 	"name": "Epiphany",
 	"version": "1.1.0",
 	"minAppVersion": "0.15.0",
-	"description": "Synchronize voice notes from the Epiphany app directly into your Obsidian vault",
+	"description": "Synchronize voice notes from the Epiphany app directly into your vault",
 	"author": "Epiphany",
 	"isDesktopOnly": false
 }
