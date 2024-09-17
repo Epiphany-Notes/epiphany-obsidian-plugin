@@ -1,6 +1,5 @@
 import {
   App,
-  FileSystemAdapter,
   Modal,
   Notice,
   Plugin,
@@ -256,12 +255,8 @@ export default class EpiphanyPlugin extends Plugin {
 
   getVaultPath() {
     const adapter = this.app.vault.adapter;
-    if (adapter instanceof FileSystemAdapter) {
-      return adapter.getBasePath();
-    } else {
       //@ts-ignore
       return adapter.basePath;
-    }
   }
 
   syncVault = async (vaultName?: string) => {
