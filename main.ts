@@ -3,7 +3,6 @@ import {
   Modal,
   Notice,
   Plugin,
-  PluginSettingTab,
   RequestUrlParam,
   WorkspaceLeaf,
   request,
@@ -42,26 +41,6 @@ export default class EpiphanyPlugin extends Plugin {
   settings: EpiphanySettings;
   private authRequestId: string | null = null;
   private isLoginOpen = false;
-
-  async grafanaLog(type: 'log' | 'error', message: string) {
-    const url = `${this.settings.baseUrl}/api/grafana/${
-      type === 'log' ? 'log' : 'error'
-    }`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ message }),
-    };
-
-    try {
-      await request(options);
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
-    }
-  }
 
   async openEmailView() {
     this.isLoginOpen = true;
@@ -205,7 +184,6 @@ export default class EpiphanyPlugin extends Plugin {
           return;
         }
       } catch (err) {
-        this.grafanaLog('error', `obsidian-plugin: ${err.message}`);
         new Notice(err.message || 'Unknown error');
       }
     }
@@ -296,7 +274,6 @@ export default class EpiphanyPlugin extends Plugin {
           ).open();
         }
       } catch (err) {
-        this.grafanaLog('error', `obsidian-plugin: ${err.message}`);
         new Notice(err.message || 'Unknown error');
       }
     } else if (!this.isLoginOpen) {
@@ -384,8 +361,6 @@ export default class EpiphanyPlugin extends Plugin {
       callback: () => this.openEmailView(),
     });
 
-    this.addSettingTab(new EpiphanySettingTab(this.app, this));
-
     this.registerInterval(
       window.setInterval(() => {
         if (this.settings.jwtToken && this.settings.jwtToken !== '') {
@@ -403,21 +378,6 @@ export default class EpiphanyPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
-  }
-}
-
-class EpiphanySettingTab extends PluginSettingTab {
-  plugin: EpiphanyPlugin;
-
-  constructor(app: App, plugin: EpiphanyPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-
-  display(): void {
-    const { containerEl } = this;
-
-    containerEl.empty();
   }
 }
 
@@ -453,14 +413,14 @@ class VaultConflictModal extends Modal {
     `;
     contentEl.appendChild(style);
 
-    contentEl.createEl('h2', { text: 'Epiphany Vault Conflict Detected' });
+    contentEl.createEl('h2', { text: 'Epiphany vault conflict detected' });
 
     contentEl.createEl('p', {
       text: `While trying to sync your vault, we found a vault with the name "${this.vaultName}" already existing.`,
     });
 
     const option1 = contentEl.createEl('button', {
-      text: 'Sync with Existing Vault',
+      text: 'Sync with existing vault',
     });
     option1.onclick = async () => {
       new Notice('Syncing with existing vault...');
@@ -469,7 +429,7 @@ class VaultConflictModal extends Modal {
     };
 
     const option2 = contentEl.createEl('button', {
-      text: 'Create New Vault with Different Name',
+      text: 'Create new vault with different name',
     });
     option2.onclick = () => {
       this.showVaultNameInput();
@@ -480,14 +440,14 @@ class VaultConflictModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    contentEl.createEl('h2', { text: 'Create New Vault' });
+    contentEl.createEl('h2', { text: 'Create new vault' });
 
     const input = contentEl.createEl('input', {
       type: 'text',
       placeholder: 'Enter new vault name',
     });
 
-    const submitBtn = contentEl.createEl('button', { text: 'Create Vault' });
+    const submitBtn = contentEl.createEl('button', { text: 'Create vault' });
     submitBtn.onclick = () => {
       const newName = input.value;
       if (newName) {
