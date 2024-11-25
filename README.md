@@ -6,7 +6,7 @@ This plugin makes it ridiculously easy to dictate notes to Obsidian without ever
 
 The Epiphany Voice mobile app will need to be installed to function. 
 
-iOS App Store Page [http://www.epiphanyvoice.io] (ios only currently)
+[iOS App Store Page](http://www.epiphanyvoice.io) (ios only currently)
 
 ## Installation Instructions
 
