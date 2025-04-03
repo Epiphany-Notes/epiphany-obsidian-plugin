@@ -10,16 +10,17 @@ The Epiphany Voice mobile app will need to be installed to function.
 
 ## Installation Instructions
 
-1. Install and create an account in the Epiphany Voice mobile app
+- Install and create an account in the Epiphany Voice mobile app
 
-2. In Obsidian, install and enable the Epiphany community plugin.
+- In Obsidian, install and enable the Epiphany community plugin
 
-3. Enabling will open a new One Time Password tab. (Use the same email your Epiphany account is associated with). Enter the One Time Password you receive via email to complete the authentication process.
+- Enabling will open a new One Time Password tab. If it doesn’t auto open, you can use the command palette and enter “Epiphany: Enter Email” to manually trigger. (Use the same email your Epiphany account is associated with). 
+- Enter the One Time Password you receive via email to complete the authentication process.
 
 ## Usage
 - Once the OTP process is complete in Obsidian, you'll be able to create an action with Obsidian in the Epiphany app.
 
-Options for Note creation:
+#### Options for Note creation:
 - By default, notes will go to an "Epiphany Notes" note. 
 - If you toggle "Create a separate note for each record", a new note will be created for every new Epiphany you send.
 - (Daily note appending coming soon)
