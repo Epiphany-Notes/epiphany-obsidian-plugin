@@ -5,6 +5,7 @@ import {
   Plugin,
   RequestUrlParam,
   WorkspaceLeaf,
+  moment,
   request,
 } from 'obsidian';
 import { EmailView, VIEW_TYPE_EMAIL } from './email-view';
@@ -24,14 +25,22 @@ const DEFAULT_SETTINGS: EpiphanySettings = {
   vaultName: null,
 };
 
+enum ObsidianTypeKey {
+  DAILY_APPEND = 'daily-append',
+  EXISTING = 'existing',
+  NEW = 'new',
+}
+
 type Upload = {
   id: string;
   userId: string;
+  syncId: any;
   label?: string;
   url: string;
   transcription: string;
   createdAt?: Date;
   createSeparate?: boolean;
+  typeId?: ObsidianTypeKey;
   fileName: string;
   vaultPath: string;
   includeAudioAttachment: boolean;
@@ -147,39 +156,99 @@ export default class EpiphanyPlugin extends Plugin {
         if (res.error) {
           throw new Error(res.message);
         }
-        if (res.length !== 0) {
-          for (const upload of res) {
-            if (upload.createSeparate) {
-              const combinedFilePath = `${upload.label}.md`;
-              const combinedFile = await this.app.vault.getFileByPath(
-                combinedFilePath
-              );
 
-              if (!combinedFile) {
-                await this.app.vault.create(
-                  `${upload.label}.md`,
-                  `${upload.transcription} ${
-                    upload.includeAudioAttachment
-                      ? `\n [audio](${upload.url})`
-                      : ''
-                  }`
+        const uploads = res as Array<Upload>;
+        if (uploads && uploads.length > 0) {
+          for (const upload of uploads) {
+            const typeKey =
+              upload.typeId ??
+              (upload.createSeparate
+                ? ObsidianTypeKey.NEW
+                : ObsidianTypeKey.EXISTING);
+
+            const fileData = {
+              name: '',
+              createNew: false,
+            };
+
+            switch (typeKey) {
+              case ObsidianTypeKey.DAILY_APPEND: {
+                const dailyOptions =
+                  (this.app as any)?.internalPlugins?.plugins?.['daily-notes']
+                    ?.instance?.options ?? {};
+
+                const { format, folder } = dailyOptions;
+
+                const now = moment();
+                const dailyFileName = now.format(
+                  (format as string) ?? 'YYYY-MM-DD'
                 );
-              } else {
-                await this.app.vault.create(
-                  `${upload.label} - ${upload.syncId}.md`,
-                  `${upload.transcription} ${
-                    upload.includeAudioAttachment
-                      ? `\n [audio](${upload.url})`
-                      : ''
-                  }`
+
+                const dailyFolder: string = (folder as string) ?? '';
+
+                const dailyFolderFormatted = dailyFolder
+                  ? dailyFolder.endsWith('/')
+                    ? dailyFolder
+                    : dailyFolder + '/'
+                  : '';
+
+                const fullPath = dailyFolderFormatted + dailyFileName + '.md';
+
+                const dailyNoteFile = await this.app.vault.getFileByPath(
+                  fullPath
                 );
+
+                fileData.createNew = !dailyNoteFile;
+                fileData.name = fullPath;
+                break;
               }
+              case ObsidianTypeKey.EXISTING: {
+                fileData.createNew = false;
+                fileData.name = 'Epiphany notes.md';
+                break;
+              }
+              case ObsidianTypeKey.NEW: {
+                const combinedFilePath = `${upload.label}.md`;
+                const combinedFile = await this.app.vault.getFileByPath(
+                  combinedFilePath
+                );
+                const path = combinedFile
+                  ? `${upload.label} - ${upload.syncId}.md`
+                  : `${upload.label}.md`;
+
+                fileData.createNew = true;
+                fileData.name = path;
+                break;
+              }
+              default: {
+                new Notice('Not able to sync the new epiphany', 5000);
+                throw new Error(`Unknown type key: '${typeKey}'`);
+              }
+            }
+
+            if (fileData.createNew) {
+              await this.app.vault.create(
+                fileData.name,
+                `${upload.transcription} ${
+                  upload.includeAudioAttachment
+                    ? `\n [audio](${upload.url})`
+                    : ''
+                }`
+              );
 
               await this.updateNote(upload.id);
             } else {
-              await this.modifyFile(upload, 'Epiphany notes.md');
+              await this.modifyFile(upload, fileData.name);
             }
           }
+
+          const single = uploads.length === 1;
+          new Notice(
+            single
+              ? 'New epiphany synced'
+              : `${uploads.length} new epiphanies synced`,
+            5000
+          );
         } else {
           return;
         }
@@ -233,8 +302,8 @@ export default class EpiphanyPlugin extends Plugin {
 
   getVaultPath() {
     const adapter = this.app.vault.adapter;
-      //@ts-ignore
-      return adapter.basePath;
+    //@ts-ignore
+    return adapter.basePath;
   }
 
   syncVault = async (vaultName?: string) => {
