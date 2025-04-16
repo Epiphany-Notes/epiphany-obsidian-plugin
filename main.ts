@@ -158,7 +158,7 @@ export default class EpiphanyPlugin extends Plugin {
         }
 
         const uploads = res as Array<Upload>;
-        if (uploads && uploads.length > 0) {
+        if (uploads && uploads.length) {
           for (const upload of uploads) {
             const typeKey =
               upload.typeId ??
@@ -186,11 +186,10 @@ export default class EpiphanyPlugin extends Plugin {
 
                 const dailyFolder: string = (folder as string) ?? '';
 
-                const dailyFolderFormatted = dailyFolder
-                  ? dailyFolder.endsWith('/')
-                    ? dailyFolder
-                    : dailyFolder + '/'
-                  : '';
+                const dailyFolderFormatted =
+                  dailyFolder && !dailyFolder.endsWith('/')
+                    ? dailyFolder + '/'
+                    : dailyFolder;
 
                 const fullPath = dailyFolderFormatted + dailyFileName + '.md';
 
