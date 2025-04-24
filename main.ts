@@ -46,6 +46,9 @@ type Upload = {
   includeAudioAttachment: boolean;
 };
 
+const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
+const UNSUPPORTED_DAILY_FORMAT_CHARS = ['/', '\\', ':'];
+
 export default class EpiphanyPlugin extends Plugin {
   settings: EpiphanySettings;
   private authRequestId: string | null = null;
@@ -173,16 +176,24 @@ export default class EpiphanyPlugin extends Plugin {
 
             switch (typeKey) {
               case ObsidianTypeKey.DAILY_APPEND: {
-                const dailyOptions =
+                let dailyFormat = DEFAULT_DAILY_FORMAT;
+
+                const { format, folder } =
                   (this.app as any)?.internalPlugins?.plugins?.['daily-notes']
                     ?.instance?.options ?? {};
 
-                const { format, folder } = dailyOptions;
+                if (format) {
+                  const isValidFormat = !UNSUPPORTED_DAILY_FORMAT_CHARS.some(
+                    (char) => (format as string).includes(char)
+                  );
+
+                  if (isValidFormat) {
+                    dailyFormat = format;
+                  }
+                }
 
                 const now = moment();
-                const dailyFileName = now.format(
-                  (format as string) ?? 'YYYY-MM-DD'
-                );
+                const dailyFileName = now.format(dailyFormat);
 
                 const dailyFolder: string = (folder as string) ?? '';
 
