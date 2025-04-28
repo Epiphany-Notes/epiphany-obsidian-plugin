@@ -3,19 +3,21 @@ import {
   Modal,
   Notice,
   Plugin,
+  PluginSettingTab,
   RequestUrlParam,
-  WorkspaceLeaf,
+  Setting,
   moment,
   request,
 } from 'obsidian';
-import { EmailView, VIEW_TYPE_EMAIL } from './email-view';
-import { OTPView, VIEW_TYPE_OTP } from './otp-view';
 
 interface EpiphanySettings {
   baseUrl: string;
   jwtToken: string | null;
   vaultId: string | null;
   vaultName: string | null;
+
+  // settings page
+  email: string | null;
 }
 
 const DEFAULT_SETTINGS: EpiphanySettings = {
@@ -23,6 +25,7 @@ const DEFAULT_SETTINGS: EpiphanySettings = {
   jwtToken: null,
   vaultId: null,
   vaultName: null,
+  email: null,
 };
 
 enum ObsidianTypeKey {
@@ -51,92 +54,6 @@ const UNSUPPORTED_DAILY_FORMAT_CHARS = ['/', '\\', ':'];
 
 export default class EpiphanyPlugin extends Plugin {
   settings: EpiphanySettings;
-  private authRequestId: string | null = null;
-  private isLoginOpen = false;
-
-  async openEmailView() {
-    this.isLoginOpen = true;
-    const leaf = this.app.workspace.getLeaf(true);
-    await leaf.setViewState({
-      type: VIEW_TYPE_EMAIL,
-      active: true,
-    });
-    this.app.workspace.revealLeaf(leaf);
-  }
-
-  async openOTPView() {
-    const leaf = this.app.workspace.getLeaf(true);
-    await leaf.setViewState({
-      type: VIEW_TYPE_OTP,
-      active: true,
-    });
-    this.app.workspace.revealLeaf(leaf);
-  }
-
-  async handleEmailSubmit(email: string) {
-    const url = `${this.settings.baseUrl}/api/auth/login`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email }),
-    };
-
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
-
-      if (res.error) {
-        throw new Error(res.message);
-      }
-      this.authRequestId = res.auth_request_id;
-      new Notice('OTP sent to your email.');
-      this.openOTPView();
-      this.app.workspace.detachLeavesOfType(VIEW_TYPE_EMAIL);
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
-    }
-  }
-
-  async handleOTPSubmit(otp: string) {
-    if (!this.authRequestId) {
-      new Notice('No auth request ID found. Please start the process again.');
-      return;
-    }
-
-    const url = `${this.settings.baseUrl}/api/auth/verify-code`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ auth_request_id: this.authRequestId, code: otp }),
-    };
-
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
-
-      if (res.error) {
-        throw new Error(res.message);
-      }
-
-      this.settings.jwtToken = res.jwt_token;
-      await this.saveSettings();
-
-      this.app.workspace.detachLeavesOfType(VIEW_TYPE_OTP);
-      this.isLoginOpen = false;
-      new Notice('Login successful!');
-      if (!this.settings.vaultId && !this.settings.vaultName) {
-        await this.syncVault();
-      }
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
-    }
-  }
 
   async fetchNotes() {
     const vaultName = this.settings.vaultName;
@@ -355,8 +272,6 @@ export default class EpiphanyPlugin extends Plugin {
       } catch (err) {
         new Notice(err.message || 'Unknown error');
       }
-    } else if (!this.isLoginOpen) {
-      this.openEmailView();
     }
   };
 
@@ -396,8 +311,6 @@ export default class EpiphanyPlugin extends Plugin {
       } catch (err) {
         new Notice(err.message || 'Unknown error');
       }
-    } else if (!this.isLoginOpen) {
-      this.openEmailView();
     }
   }
 
@@ -417,35 +330,15 @@ export default class EpiphanyPlugin extends Plugin {
         if (!combinedFile) {
           combinedFile = await this.app.vault.create('Epiphany notes.md', '');
         }
-      } else if (!this.isLoginOpen) {
-        this.openEmailView();
       }
     });
 
-    this.registerView(
-      VIEW_TYPE_EMAIL,
-      (leaf: WorkspaceLeaf) =>
-        new EmailView(leaf, (email) => this.handleEmailSubmit(email))
-    );
-
-    this.registerView(
-      VIEW_TYPE_OTP,
-      (leaf: WorkspaceLeaf) =>
-        new OTPView(leaf, (otp) => this.handleOTPSubmit(otp))
-    );
-
-    this.addCommand({
-      id: 'open-email-view',
-      name: 'Enter Email',
-      callback: () => this.openEmailView(),
-    });
+    this.addSettingTab(new EpiphanySettingTab(this.app, this));
 
     this.registerInterval(
       window.setInterval(() => {
         if (this.settings.jwtToken && this.settings.jwtToken !== '') {
           this.fetchNotes();
-        } else if (!this.isLoginOpen) {
-          this.openEmailView();
         }
       }, 0.1 * 60 * 1000)
     );
@@ -542,5 +435,166 @@ class VaultConflictModal extends Modal {
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
+  }
+}
+
+class EpiphanySettingTab extends PluginSettingTab {
+  private plugin: EpiphanyPlugin;
+  private email: string;
+  private authRequestId: string | null = null;
+  private otp: string | null = null;
+
+  constructor(app: App, plugin: EpiphanyPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+    this.email = plugin.settings.email ?? '';
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    const style = document.createElement('style');
+    style.textContent = `
+      .spacing {
+        margin-bottom: 20px;
+      }
+    `;
+    containerEl.appendChild(style);
+
+    const token = this.plugin.settings.jwtToken;
+
+    new Setting(containerEl)
+      .setName('Email')
+      .setDesc('Enter your email address.')
+      .addText((text) =>
+        text
+          .setPlaceholder('Enter your email')
+          .setValue(this.email)
+          .onChange(async (value) => {
+            this.email = value;
+          })
+      );
+
+    const authButton = containerEl.createEl('button', {
+      text: token ? 'Re-Auth' : 'Auth',
+    });
+    authButton.addClass('spacing');
+    authButton.addEventListener('click', async () => {
+      await this.handleEmailSubmit(this.email);
+      this.refreshScreen();
+    });
+
+    if (this.authRequestId) {
+      new Setting(containerEl)
+        .setName('One Time Password')
+        .setDesc('Please check your inbox.')
+        .addText((text) =>
+          text
+            .setPlaceholder('Enter code')
+            .setValue(this.otp ?? '')
+            .onChange((value) => {
+              this.otp = value;
+            })
+        );
+
+      containerEl
+        .createEl('button', { text: 'Verify' })
+        .addEventListener('click', async () => {
+          await this.handleOTPSubmit(this.otp);
+          this.refreshScreen();
+        });
+    }
+  }
+
+  private refreshScreen() {
+    this.display();
+  }
+
+  private async handleEmailSubmit(emailAddress: string | null) {
+    this.authRequestId = null;
+
+    if (!emailAddress) {
+      new Notice('No email found. Please enter your email address.');
+      return;
+    }
+
+    const url = `${this.plugin.settings.baseUrl}/api/auth/login`;
+    const options: RequestUrlParam = {
+      url: url,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: emailAddress }),
+    };
+
+    try {
+      const response = await request(options);
+      const res = JSON.parse(response);
+
+      if (res.error) {
+        throw new Error(res.message);
+      }
+      this.authRequestId = res.auth_request_id;
+
+      // update email
+      this.plugin.settings.email = emailAddress;
+      await this.plugin.saveSettings();
+
+      new Notice('OTP sent to your email.');
+    } catch (err) {
+      new Notice(err.message || 'Unknown error');
+    }
+  }
+
+  private async handleOTPSubmit(code: string | null) {
+    if (!this.authRequestId) {
+      new Notice('No auth request ID found. Please start the process again.');
+      return;
+    }
+
+    if (!code) {
+      new Notice('Please enter code.');
+      return;
+    }
+
+    new Notice('Verifying...');
+
+    const url = `${this.plugin.settings.baseUrl}/api/auth/verify-code`;
+    const options: RequestUrlParam = {
+      url: url,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ auth_request_id: this.authRequestId, code: code }),
+    };
+
+    try {
+      const response = await request(options);
+      const res = JSON.parse(response);
+
+      if (res.error) {
+        throw new Error(res.message);
+      }
+
+      this.plugin.settings.jwtToken = res.jwt_token;
+      await this.plugin.saveSettings();
+
+      this.authRequestId = null;
+      this.otp = null;
+
+      new Notice('Login successful!');
+    } catch (err) {
+      if (err?.status === 400) {
+        new Notice('Password is incorrect.');
+      } else {
+        new Notice(err?.message || 'Unknown error');
+      }
+    }
+
+    if (!this.plugin.settings.vaultId && !this.plugin.settings.vaultName) {
+      await this.plugin.syncVault();
+    }
   }
 }
