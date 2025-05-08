@@ -440,7 +440,7 @@ class EpiphanySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Email')
-      .setDesc('Enter your epiphany account email address.')
+      .setDesc('Enter your Epiphany account email address.')
       .addText((text) =>
         text
           .setPlaceholder('Enter email')
@@ -485,7 +485,7 @@ class EpiphanySettingTab extends PluginSettingTab {
     this.authRequestId = null;
 
     if (!emailAddress) {
-      new Notice('No email found. Please enter your email address.');
+      new Notice('No email found. Please enter email address.');
       return;
     }
 
