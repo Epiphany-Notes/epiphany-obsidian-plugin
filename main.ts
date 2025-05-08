@@ -47,6 +47,7 @@ type Upload = {
   fileName: string;
   vaultPath: string;
   includeAudioAttachment: boolean;
+  includeTitle: boolean;
 };
 
 const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
@@ -87,8 +88,7 @@ export default class EpiphanyPlugin extends Plugin {
                 : ObsidianTypeKey.EXISTING);
 
             const fileData = {
-              name: '',
-              createNew: false,
+              path: '',
             };
 
             switch (typeKey) {
@@ -119,32 +119,22 @@ export default class EpiphanyPlugin extends Plugin {
                     ? dailyFolder + '/'
                     : dailyFolder;
 
-                const fullPath = dailyFolderFormatted + dailyFileName + '.md';
-
-                const dailyNoteFile = await this.app.vault.getFileByPath(
-                  fullPath
-                );
-
-                fileData.createNew = !dailyNoteFile;
-                fileData.name = fullPath;
+                fileData.path = dailyFolderFormatted + dailyFileName + '.md';
                 break;
               }
               case ObsidianTypeKey.EXISTING: {
-                fileData.createNew = false;
-                fileData.name = 'Epiphany notes.md';
+                fileData.path = 'Epiphany notes.md';
                 break;
               }
               case ObsidianTypeKey.NEW: {
                 const combinedFilePath = `${upload.label}.md`;
-                const combinedFile = await this.app.vault.getFileByPath(
-                  combinedFilePath
-                );
+                const combinedFile =
+                  this.app.vault.getFileByPath(combinedFilePath);
                 const path = combinedFile
                   ? `${upload.label} - ${upload.syncId}.md`
                   : `${upload.label}.md`;
 
-                fileData.createNew = true;
-                fileData.name = path;
+                fileData.path = path;
                 break;
               }
               default: {
@@ -153,20 +143,7 @@ export default class EpiphanyPlugin extends Plugin {
               }
             }
 
-            if (fileData.createNew) {
-              await this.app.vault.create(
-                fileData.name,
-                `${upload.transcription} ${
-                  upload.includeAudioAttachment
-                    ? `\n [audio](${upload.url})`
-                    : ''
-                }`
-              );
-
-              await this.updateNote(upload.id);
-            } else {
-              await this.modifyFile(upload, fileData.name);
-            }
+            await this.createOrModifyFile(upload, fileData.path);
           }
 
           const single = uploads.length === 1;
@@ -185,23 +162,30 @@ export default class EpiphanyPlugin extends Plugin {
     }
   }
 
-  async modifyFile(upload: Upload, fileName: string) {
-    const combinedFilePath = fileName;
-    let combinedFile = await this.app.vault.getFileByPath(combinedFilePath);
+  private getNoteTextFromUpload(upload: Upload): string {
+    const label = upload.includeTitle ? `${upload.label}\n` : '';
+    const transcription = upload.transcription ?? 'N/A';
+    const audioFile = upload.includeAudioAttachment
+      ? `\n [audio](${upload.url})`
+      : '';
 
-    if (!combinedFile) {
-      combinedFile = await this.app.vault.create(combinedFilePath, '');
+    return label + transcription + audioFile;
+  }
+
+  async createOrModifyFile(upload: Upload, filePath: string) {
+    const noteText = this.getNoteTextFromUpload(upload);
+
+    const existingFile = this.app.vault.getFileByPath(filePath);
+    if (existingFile) {
+      const existingContent = await this.app.vault.read(existingFile);
+      const combinedContent = `${existingContent}\n\n ## ${noteText}`;
+
+      await this.app.vault.modify(existingFile, combinedContent);
+    } else {
+      await this.app.vault.create(filePath, noteText);
     }
 
-    let combinedContent = await this.app.vault.read(combinedFile);
-
-    const noteContent = `\n\n ## ${upload.label} \n ${upload.transcription} ${
-      upload.includeAudioAttachment ? `\n [audio](${upload.url})` : ''
-    }`;
-    combinedContent += noteContent;
     await this.updateNote(upload.id);
-
-    await this.app.vault.modify(combinedFile, combinedContent);
   }
 
   async updateNote(id: string) {
@@ -453,36 +437,24 @@ class EpiphanySettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    const style = document.createElement('style');
-    style.textContent = `
-      .spacing {
-        margin-bottom: 20px;
-      }
-    `;
-    containerEl.appendChild(style);
-
-    const token = this.plugin.settings.jwtToken;
 
     new Setting(containerEl)
       .setName('Email')
-      .setDesc('Enter your email address.')
+      .setDesc('Enter your epiphany account email address.')
       .addText((text) =>
         text
-          .setPlaceholder('Enter your email')
+          .setPlaceholder('Enter email')
           .setValue(this.email)
           .onChange(async (value) => {
             this.email = value;
           })
-      );
-
-    const authButton = containerEl.createEl('button', {
-      text: token ? 'Re-Auth' : 'Auth',
-    });
-    authButton.addClass('spacing');
-    authButton.addEventListener('click', async () => {
-      await this.handleEmailSubmit(this.email);
-      this.refreshScreen();
-    });
+      )
+      .addButton((button) => {
+        button.setButtonText('Send authorization email').onClick(async () => {
+          await this.handleEmailSubmit(this.email);
+          this.refreshScreen();
+        });
+      });
 
     if (this.authRequestId) {
       new Setting(containerEl)
@@ -495,13 +467,12 @@ class EpiphanySettingTab extends PluginSettingTab {
             .onChange((value) => {
               this.otp = value;
             })
-        );
-
-      containerEl
-        .createEl('button', { text: 'Verify' })
-        .addEventListener('click', async () => {
-          await this.handleOTPSubmit(this.otp);
-          this.refreshScreen();
+        )
+        .addButton((button) => {
+          button.setButtonText('Verify').onClick(async () => {
+            await this.handleOTPSubmit(this.otp);
+            this.refreshScreen();
+          });
         });
     }
   }
@@ -517,6 +488,8 @@ class EpiphanySettingTab extends PluginSettingTab {
       new Notice('No email found. Please enter your email address.');
       return;
     }
+
+    new Notice('Sending email...');
 
     const url = `${this.plugin.settings.baseUrl}/api/auth/login`;
     const options: RequestUrlParam = {
