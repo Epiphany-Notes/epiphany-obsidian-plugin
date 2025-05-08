@@ -1,7 +1,7 @@
 {
 	"id": "epiphany",
 	"name": "Epiphany",
-	"version": "1.3.1",
+	"version": "1.3.2",
 	"minAppVersion": "0.15.0",
 	"description": "Synchronize voice notes from the Epiphany app directly into your vault",
 	"author": "Epiphany",
