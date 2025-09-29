@@ -178,7 +178,7 @@ export default class EpiphanyPlugin extends Plugin {
     const existingFile = this.app.vault.getFileByPath(filePath);
     if (existingFile) {
       const existingContent = await this.app.vault.read(existingFile);
-      const combinedContent = `${existingContent}\n\n ## ${noteText}`;
+      const combinedContent = `${existingContent}\n\n${noteText}`;
 
       await this.app.vault.modify(existingFile, combinedContent);
     } else {
