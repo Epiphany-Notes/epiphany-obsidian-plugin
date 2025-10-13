@@ -75,6 +75,10 @@ export default class EpiphanyPlugin extends Plugin {
         const res = JSON.parse(response);
 
         if (res.error) {
+          if (res.status === 429) {
+            // ignore rate limit error
+            return;
+          }
           throw new Error(res.message);
         }
 
@@ -153,8 +157,6 @@ export default class EpiphanyPlugin extends Plugin {
               : `${uploads.length} new epiphanies synced`,
             5000
           );
-        } else {
-          return;
         }
       } catch (err) {
         new Notice(err.message || 'Unknown error');
@@ -324,7 +326,7 @@ export default class EpiphanyPlugin extends Plugin {
         if (this.settings.jwtToken && this.settings.jwtToken !== '') {
           this.fetchNotes();
         }
-      }, 0.1 * 60 * 1000)
+      }, 60 * 1000)
     );
   }
 
