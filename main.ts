@@ -1,575 +1,800 @@
 import {
-  App,
-  Modal,
-  Notice,
-  Plugin,
-  PluginSettingTab,
-  RequestUrlParam,
-  Setting,
-  moment,
-  request,
+	App,
+	Modal,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	RequestUrlParam,
+	Setting,
+	TFile,
+	moment,
+	request,
 } from 'obsidian';
 
-interface EpiphanySettings {
-  baseUrl: string;
-  jwtToken: string | null;
-  vaultId: string | null;
-  vaultName: string | null;
 
-  // settings page
-  email: string | null;
+interface EpiphanySettings {
+	baseUrl: string;
+	jwtToken: string | null;
+	vaultId: string | null;
+	vaultName: string | null;
+
+	// settings page
+	email: string | null;
 }
 
 const DEFAULT_SETTINGS: EpiphanySettings = {
-  baseUrl: 'https://api-v2.epiphanyvoice.app',
-  jwtToken: null,
-  vaultId: null,
-  vaultName: null,
-  email: null,
+	baseUrl: 'https://api-v2.epiphanyvoice.app',
+	jwtToken: null,
+	vaultId: null,
+	vaultName: null,
+	email: null,
 };
 
 enum ObsidianTypeKey {
-  DAILY_APPEND = 'daily-append',
-  EXISTING = 'existing',
-  NEW = 'new',
+	DAILY_APPEND = 'daily-append',
+	EXISTING = 'existing',
+	NEW = 'new',
 }
 
 type Upload = {
-  id: string;
-  userId: string;
-  syncId: any;
-  label?: string;
-  url: string;
-  transcription: string;
-  createdAt?: Date;
-  createSeparate?: boolean;
-  typeId?: ObsidianTypeKey;
-  fileName: string;
-  vaultPath: string;
-  includeAudioAttachment: boolean;
-  includeTitle: boolean;
+	id: string;
+	userId: string;
+	syncId: any;
+	label?: string;
+	url: string;
+	transcription: string;
+	createdAt?: string;
+	createSeparate?: boolean;
+	typeId?: ObsidianTypeKey;
+	fileName: string;
+	vaultPath: string;
+	includeAudioAttachment: boolean;
+	includeTitle: boolean;
 };
 
 const DEFAULT_DAILY_FORMAT = 'YYYY-MM-DD';
 const UNSUPPORTED_DAILY_FORMAT_CHARS = ['/', '\\', ':'];
 
 export default class EpiphanyPlugin extends Plugin {
-  settings: EpiphanySettings;
+	settings: EpiphanySettings;
 
-  async fetchNotes() {
-    const vaultName = this.settings.vaultName;
-    if (vaultName) {
-      const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
-      const options: RequestUrlParam = {
-        url: url,
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.settings.jwtToken}`,
-          'ngrok-skip-browser-warning': '69420',
-        },
-      };
+	// SSE connection state
+	private eventSource: EventSource | null = null;
+	private sseConnected = false;
+	private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+	private reconnectDelay = 1000;
+	private pollingInterval: number | null = null;
+	private isFetching = false;
 
-      try {
-        const response = await request(options);
-        const res = JSON.parse(response);
 
-        if (res.error) {
-          if (res.status === 429) {
-            // ignore rate limit error
-            return;
-          }
-          throw new Error(res.message);
-        }
+	// --- Common headers helper ---
 
-        const uploads = res as Array<Upload>;
-        if (uploads && uploads.length) {
-          for (const upload of uploads) {
-            const typeKey =
-              upload.typeId ??
-              (upload.createSeparate
-                ? ObsidianTypeKey.NEW
-                : ObsidianTypeKey.EXISTING);
+	private getHeaders(): Record<string, string> {
+		return {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${this.settings.jwtToken}`,
+			'X-Plugin-Version': this.manifest.version,
+			'ngrok-skip-browser-warning': '69420',
+		};
+	}
 
-            const fileData = {
-              path: '',
-            };
+	// --- Core sync methods ---
 
-            switch (typeKey) {
-              case ObsidianTypeKey.DAILY_APPEND: {
-                let dailyFormat = DEFAULT_DAILY_FORMAT;
+	async fetchNotes() {
+		if (this.isFetching) return;
+		this.isFetching = true;
+		try {
+			const vaultName = this.settings.vaultName;
+			if (vaultName) {
+				const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
+				const options: RequestUrlParam = {
+					url: url,
+					method: 'GET',
+					headers: this.getHeaders(),
+				};
 
-                const { format, folder } =
-                  (this.app as any)?.internalPlugins?.plugins?.['daily-notes']
-                    ?.instance?.options ?? {};
+				let syncedCount = 0;
+				try {
+					const response = await request(options);
+					const res = JSON.parse(response);
 
-                if (format) {
-                  const isValidFormat = !UNSUPPORTED_DAILY_FORMAT_CHARS.some(
-                    (char) => (format as string).includes(char)
-                  );
+					if (res.error) {
+						if (res.status === 429) {
+							// ignore rate limit error
+							return;
+						}
+						throw new Error(res.message);
+					}
 
-                  if (isValidFormat) {
-                    dailyFormat = format;
-                  }
-                }
+					const uploads = res as Array<Upload>;
+					if (uploads && uploads.length) {
+						for (const upload of uploads) {
+							const typeKey =
+								upload.typeId ??
+								(upload.createSeparate
+									? ObsidianTypeKey.NEW
+									: ObsidianTypeKey.EXISTING);
 
-                const now = moment();
-                const dailyFileName = now.format(dailyFormat);
+							const fileData = {
+								path: '',
+							};
 
-                const dailyFolder: string = (folder as string) ?? '';
+							switch (typeKey) {
+								case ObsidianTypeKey.DAILY_APPEND: {
+									let dailyFormat = DEFAULT_DAILY_FORMAT;
 
-                const dailyFolderFormatted =
-                  dailyFolder && !dailyFolder.endsWith('/')
-                    ? dailyFolder + '/'
-                    : dailyFolder;
+									const { format, folder } =
+										(this.app as any)?.internalPlugins?.plugins?.['daily-notes']
+											?.instance?.options ?? {};
 
-                fileData.path = dailyFolderFormatted + dailyFileName + '.md';
-                break;
-              }
-              case ObsidianTypeKey.EXISTING: {
-                fileData.path = 'Epiphany notes.md';
-                break;
-              }
-              case ObsidianTypeKey.NEW: {
-                const combinedFilePath = `${upload.label}.md`;
-                const combinedFile =
-                  this.app.vault.getFileByPath(combinedFilePath);
-                const path = combinedFile
-                  ? `${upload.label} - ${upload.syncId}.md`
-                  : `${upload.label}.md`;
+									if (format) {
+										const isValidFormat = !UNSUPPORTED_DAILY_FORMAT_CHARS.some(
+											(char) => (format as string).includes(char)
+										);
 
-                fileData.path = path;
-                break;
-              }
-              default: {
-                new Notice('Not able to sync the new epiphany', 5000);
-                throw new Error(`Unknown type key: '${typeKey}'`);
-              }
-            }
+										if (isValidFormat) {
+											dailyFormat = format;
+										}
+									}
 
-            await this.createOrModifyFile(upload, fileData.path);
-          }
+									// 2.10: Use recording date instead of current date
+									const recordedAt = upload.createdAt ? moment(upload.createdAt) : moment();
+									const dailyFileName = recordedAt.format(dailyFormat);
 
-          const single = uploads.length === 1;
-          new Notice(
-            single
-              ? 'New epiphany synced'
-              : `${uploads.length} new epiphanies synced`,
-            5000
-          );
-        }
-      } catch (err) {
-        new Notice(err.message || 'Unknown error');
-      }
-    }
-  }
+									const dailyFolder: string = (folder as string) ?? '';
 
-  private getNoteTextFromUpload(upload: Upload): string {
-    const label = upload.includeTitle ? `${upload.label}\n` : '';
-    const transcription = upload.transcription ?? 'N/A';
-    const audioFile = upload.includeAudioAttachment
-      ? `\n [audio](${upload.url})`
-      : '';
+									const dailyFolderFormatted =
+										dailyFolder && !dailyFolder.endsWith('/')
+											? dailyFolder + '/'
+											: dailyFolder;
 
-    return label + transcription + audioFile;
-  }
+									fileData.path = dailyFolderFormatted + dailyFileName + '.md';
+									break;
+								}
+								case ObsidianTypeKey.EXISTING: {
+									// Strip .md if user included it
+									const rawName = upload.fileName || 'Epiphany notes';
+									const targetName = rawName.endsWith('.md') ? rawName.slice(0, -3) : rawName;
+									// Search all folders for existing note with this name
+									const match = this.app.vault.getMarkdownFiles().find(f => f.basename === targetName);
+									fileData.path = match ? match.path : targetName + '.md';
+									break;
+								}
+								case ObsidianTypeKey.NEW: {
+									const combinedFilePath = `${upload.label}.md`;
+									const combinedFile =
+										this.app.vault.getFileByPath(combinedFilePath);
+									const path = combinedFile
+										? `${upload.label} - ${upload.syncId}.md`
+										: `${upload.label}.md`;
 
-  async createOrModifyFile(upload: Upload, filePath: string) {
-    const noteText = this.getNoteTextFromUpload(upload);
+									fileData.path = path;
+									break;
+								}
+								default: {
+									throw new Error(`Unknown type key: '${typeKey}'`);
+								}
+							}
 
-    const existingFile = this.app.vault.getFileByPath(filePath);
-    if (existingFile) {
-      const existingContent = await this.app.vault.read(existingFile);
-      const combinedContent = `${existingContent}\n\n${noteText}`;
+							const success = await this.createOrModifyFile(upload, fileData.path);
+							if (success) syncedCount++;
+						}
 
-      await this.app.vault.modify(existingFile, combinedContent);
-    } else {
-      await this.app.vault.create(filePath, noteText);
-    }
+						if (syncedCount > 0) {
+							new Notice(
+								syncedCount === 1
+									? 'New epiphany synced'
+									: `${syncedCount} new epiphanies synced`,
+								5000
+							);
+						}
+					}
+				} catch (err) {
+					// Only show generic error if no notes synced at all
+					if (syncedCount === 0) {
+						new Notice('Epiphany: Something went wrong, please try again later.', 5000);
+					}
+				}
+			}
+		} finally {
+			this.isFetching = false;
+		}
+	}
 
-    await this.updateNote(upload.id);
-  }
+	// --- 2.12: Markdown readability improvements ---
 
-  async updateNote(id: string) {
-    const url = `${this.settings.baseUrl}/api/uploads/obsidian/sync/${id}`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.settings.jwtToken}`,
-        'Content-Type': 'application/json',
-      },
-    };
+	private getNoteTextFromUpload(upload: Upload): string {
+		const label = upload.includeTitle ? `${upload.label}\n` : '';
+		const transcription = upload.transcription ?? 'N/A';
+		const audioFile = upload.includeAudioAttachment
+			? `\n [audio](${upload.url})`
+			: '';
 
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
+		return label + transcription + audioFile;
+	}
 
-      if (res.error) {
-        throw new Error(res.message);
-      }
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
-    }
-  }
+	// --- 2.4 & 2.5: File write with duplicate protection and retry ---
 
-  getVaultPath() {
-    const adapter = this.app.vault.adapter;
-    //@ts-ignore
-    return adapter.basePath;
-  }
+	async createOrModifyFile(upload: Upload, filePath: string): Promise<boolean> {
+		const existingFile = this.app.vault.getFileByPath(filePath);
+		const noteText = this.getNoteTextFromUpload(upload);
 
-  syncVault = async (vaultName?: string) => {
-    if (this.settings.jwtToken && this.settings.jwtToken !== '') {
-      const vault_path = this.getVaultPath();
-      const vault_name = vaultName || this.app.vault.getName();
+		try {
+			await this.writeToVault(existingFile, filePath, noteText, upload);
+		} catch (err) {
+			// Retry once after 1 second
+			try {
+				await new Promise(resolve => setTimeout(resolve, 1000));
+				// Re-resolve file state after delay
+				const retryFile = this.app.vault.getFileByPath(filePath);
+				const retryNoteText = this.getNoteTextFromUpload(upload);
+				await this.writeToVault(retryFile, filePath, retryNoteText, upload);
+			} catch (retryErr) {
+				new Notice('Epiphany: Something went wrong, please try again later.', 5000);
+				// Report error to API (fire-and-forget)
+				this.reportSyncError(upload.id, (retryErr as Error).message).catch(() => { });
+				// Don't call updateNote — record stays unsynced for retry on next fetch
+				return false;
+			}
+		}
 
-      const url = `${this.settings.baseUrl}/api/uploads/obsidian/sync-vault`;
-      const options: RequestUrlParam = {
-        url: url,
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.settings.jwtToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ vault_name, vault_path }),
-      };
+		await this.updateNote(upload.id);
+		return true;
+	}
 
-      try {
-        const response = await request(options);
-        const res = JSON.parse(response);
+	private async writeToVault(existingFile: TFile | null, filePath: string, noteText: string, upload: Upload) {
+		// Check filesystem directly — vault metadata cache can be stale
+		const fileExists = existingFile || await this.app.vault.adapter.exists(filePath);
 
-        if (res.error) {
-          throw new Error(res.message);
-        }
-        if (res.isUnique) {
-          this.settings.vaultId = res.id;
-          this.settings.vaultName = vault_name;
-          await this.saveSettings();
-        } else {
-          new VaultConflictModal(
-            this.app,
-            vault_name,
-            res.id,
-            this.saveModalResults,
-            this.syncVault
-          ).open();
-        }
-      } catch (err) {
-        new Notice(err.message || 'Unknown error');
-      }
-    }
-  };
+		if (fileExists) {
+			const existingContent = existingFile
+				? await this.app.vault.read(existingFile)
+				: await this.app.vault.adapter.read(filePath);
 
-  saveModalResults = async (vaultName: string, vaultId: string) => {
-    this.settings.vaultId = vaultId;
-    this.settings.vaultName = vaultName;
-    await this.saveSettings();
-  };
+			// Duplicate check — skip if this exact note was already appended
+			const noteTextWithoutSeparator = this.getNoteTextFromUpload(upload);
+			if (existingContent.trimEnd().endsWith(noteTextWithoutSeparator.trim())) {
+				return; // Already written
+			}
 
-  async updateFiles() {
-    if (this.settings.jwtToken && this.settings.jwtToken !== '') {
-      const vault_path = this.getVaultPath();
-      const vault_name = this.settings.vaultName;
+			const combinedContent = `${existingContent}\n\n${noteText}`;
+			if (existingFile) {
+				await this.app.vault.modify(existingFile, combinedContent);
+			} else {
+				await this.app.vault.adapter.write(filePath, combinedContent);
+			}
+		} else {
+			await this.app.vault.create(filePath, noteText);
+		}
+	}
 
-      const url = `${this.settings.baseUrl}/api/uploads/obsidian/update-vault`;
-      const options: RequestUrlParam = {
-        url: url,
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.settings.jwtToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          vault_name,
-          vault_path,
-          vault_id: this.settings.vaultId,
-        }),
-      };
+	// --- Sync confirmation ---
 
-      try {
-        const response = await request(options);
-        const res = JSON.parse(response);
+	async updateNote(id: string) {
+		const url = `${this.settings.baseUrl}/api/uploads/obsidian/sync/${id}`;
+		const options: RequestUrlParam = {
+			url: url,
+			method: 'POST',
+			headers: this.getHeaders(),
+		};
 
-        if (res.error) {
-          throw new Error(res.message);
-        }
-      } catch (err) {
-        new Notice(err.message || 'Unknown error');
-      }
-    }
-  }
+		try {
+			const response = await request(options);
+			const res = JSON.parse(response);
 
-  async onload() {
-    await this.loadSettings();
-    this.app.workspace.onLayoutReady(async () => {
-      if (!this.settings.vaultId && !this.settings.vaultName) {
-        await this.syncVault();
-      }
+			if (res.error) {
+				throw new Error(res.message);
+			}
+		} catch (err) {
+			// Silently fail — sync confirmation errors are retried on next fetch
+		}
+	}
 
-      if (this.settings.jwtToken && this.settings.jwtToken !== '') {
-        this.fetchNotes();
-        let combinedFile = await this.app.vault.getFileByPath(
-          'Epiphany notes.md'
-        );
+	getVaultPath() {
+		const adapter = this.app.vault.adapter;
+		//@ts-ignore
+		return adapter.basePath;
+	}
 
-        if (!combinedFile) {
-          combinedFile = await this.app.vault.create('Epiphany notes.md', '');
-        }
-      }
-    });
+	syncVault = async (vaultName?: string) => {
+		if (this.settings.jwtToken && this.settings.jwtToken !== '') {
+			const vault_path = this.getVaultPath();
+			const vault_name = vaultName || this.app.vault.getName();
 
-    this.addSettingTab(new EpiphanySettingTab(this.app, this));
+			const url = `${this.settings.baseUrl}/api/uploads/obsidian/sync-vault`;
+			const options: RequestUrlParam = {
+				url: url,
+				method: 'POST',
+				headers: this.getHeaders(),
+				body: JSON.stringify({ vault_name, vault_path }),
+			};
 
-    this.registerInterval(
-      window.setInterval(() => {
-        if (this.settings.jwtToken && this.settings.jwtToken !== '') {
-          this.fetchNotes();
-        }
-      }, 60 * 1000)
-    );
-  }
+			try {
+				const response = await request(options);
+				const res = JSON.parse(response);
 
-  async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-  }
+				if (res.error) {
+					throw new Error(res.message);
+				}
+				if (res.isUnique) {
+					this.settings.vaultId = res.id;
+					this.settings.vaultName = vault_name;
+					await this.saveSettings();
+				} else {
+					new VaultConflictModal(
+						this.app,
+						vault_name,
+						res.id,
+						this.saveModalResults,
+						this.syncVault
+					).open();
+				}
+			} catch (err) {
+				new Notice('Epiphany: Something went wrong, please try again later.', 5000);
+			}
+		}
+	};
 
-  async saveSettings() {
-    await this.saveData(this.settings);
-  }
+	saveModalResults = async (vaultName: string, vaultId: string) => {
+		this.settings.vaultId = vaultId;
+		this.settings.vaultName = vaultName;
+		await this.saveSettings();
+	};
+
+	async updateFiles() {
+		if (this.settings.jwtToken && this.settings.jwtToken !== '') {
+			const vault_path = this.getVaultPath();
+			const vault_name = this.settings.vaultName;
+
+			const url = `${this.settings.baseUrl}/api/uploads/obsidian/update-vault`;
+			const options: RequestUrlParam = {
+				url: url,
+				method: 'POST',
+				headers: this.getHeaders(),
+				body: JSON.stringify({
+					vault_name,
+					vault_path,
+					vault_id: this.settings.vaultId,
+				}),
+			};
+
+			try {
+				const response = await request(options);
+				const res = JSON.parse(response);
+
+				if (res.error) {
+					throw new Error(res.message);
+				}
+			} catch (err) {
+				// Silently fail — vault update errors are non-critical
+			}
+		}
+	}
+
+	// --- 2.8: Error reporting to API ---
+
+	private async reportSyncError(uploadId: string, error: string) {
+		try {
+			await request({
+				url: `${this.settings.baseUrl}/api/uploads/obsidian/sync-error`,
+				method: 'POST',
+				headers: this.getHeaders(),
+				body: JSON.stringify({ uploadId, error, pluginVersion: this.manifest.version }),
+			});
+		} catch {
+			// Silently ignore — error reporting should never block sync
+		}
+	}
+
+	// --- 2.9: Version check & update warning ---
+
+	private async checkForUpdates() {
+		try {
+			const response = await request({
+				url: `${this.settings.baseUrl}/api/uploads/obsidian/latest-version`,
+				method: 'GET',
+				headers: this.getHeaders(),
+			});
+			const { latestVersion } = JSON.parse(response);
+
+			if (latestVersion && this.isVersionLessThan(this.manifest.version, latestVersion)) {
+				new Notice(
+					`A new version of Epiphany is available (v${latestVersion}). Please update in Settings > Community Plugins.`,
+					0 // persistent notice
+				);
+			}
+		} catch {
+			// Silently ignore — version check should never block plugin startup
+		}
+	}
+
+	private isVersionLessThan(current: string, target: string): boolean {
+		const [cMajor, cMinor, cPatch] = current.split('.').map(Number);
+		const [tMajor, tMinor, tPatch] = target.split('.').map(Number);
+		if (cMajor !== tMajor) return cMajor < tMajor;
+		if (cMinor !== tMinor) return cMinor < tMinor;
+		return cPatch < tPatch;
+	}
+
+	// --- 2.1: SSE Connection Manager ---
+
+	initSseConnection = async () => {
+		if (!this.settings.jwtToken) return;
+
+		try {
+			// Get ticket
+			const ticketResponse = await request({
+				url: `${this.settings.baseUrl}/api/sse/ticket`,
+				method: 'POST',
+				headers: this.getHeaders(),
+			});
+			const { ticket } = JSON.parse(ticketResponse);
+
+			// Open EventSource
+			this.eventSource = new EventSource(
+				`${this.settings.baseUrl}/api/sse/sync?ticket=${ticket}`
+			);
+
+			this.eventSource.addEventListener('connected', () => {
+				this.sseConnected = true;
+				this.reconnectDelay = 1000; // Reset backoff
+				this.stopPolling();
+				this.fetchNotes().catch(() => { }); // Catch up on any missed notes
+			});
+
+			this.eventSource.addEventListener('sync-ready', () => {
+				this.fetchNotes().catch(() => { });
+			});
+
+			this.eventSource.onerror = () => {
+				this.closeSseConnection();
+				this.startReconnection();
+				this.startPolling(); // Fallback
+			};
+		} catch (err) {
+			if ((err as any)?.status === 401) {
+				new Notice('Epiphany: Session expired. Please re-authenticate in settings.');
+				return; // Don't reconnect on auth failure
+			}
+			this.startReconnection();
+			this.startPolling();
+		}
+	};
+
+	private closeSseConnection() {
+		if (this.eventSource) {
+			this.eventSource.close();
+			this.eventSource = null;
+		}
+		this.sseConnected = false;
+	}
+
+	// --- 2.2: Reconnection with exponential backoff ---
+
+	private startReconnection() {
+		if (this.reconnectTimeout) return; // Already reconnecting
+
+		this.reconnectTimeout = setTimeout(() => {
+			this.reconnectTimeout = null;
+			this.initSseConnection().catch(() => { });
+		}, this.reconnectDelay);
+
+		// Exponential backoff: 1s -> 2s -> 4s -> 8s -> 16s -> 30s cap
+		this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+	}
+
+	private stopReconnection() {
+		if (this.reconnectTimeout) {
+			clearTimeout(this.reconnectTimeout);
+			this.reconnectTimeout = null;
+		}
+	}
+
+	// --- 2.3: Fallback adaptive polling ---
+
+	private startPolling() {
+		if (this.pollingInterval !== null) return; // Already polling
+
+		const poll = () => {
+			if (this.sseConnected) return; // SSE reconnected
+			if (this.settings.jwtToken) {
+				this.fetchNotes().catch(() => { });
+			}
+		};
+
+		// Poll at 60s interval
+		this.pollingInterval = window.setInterval(() => {
+			poll();
+		}, 60 * 1000);
+		this.registerInterval(this.pollingInterval);
+	}
+
+	private stopPolling() {
+		if (this.pollingInterval !== null) {
+			window.clearInterval(this.pollingInterval);
+			this.pollingInterval = null;
+		}
+	}
+
+	// --- Lifecycle ---
+
+	async onload() {
+		await this.loadSettings();
+		this.app.workspace.onLayoutReady(async () => {
+			if (!this.settings.vaultId && !this.settings.vaultName) {
+				await this.syncVault();
+			}
+
+			if (this.settings.jwtToken && this.settings.jwtToken !== '') {
+				this.fetchNotes().catch(() => { }); // Immediate fetch on load
+				this.initSseConnection().catch(() => { }); // Start SSE
+				this.checkForUpdates().catch(() => { }); // Version check
+			}
+		});
+
+		this.addSettingTab(new EpiphanySettingTab(this.app, this));
+
+		// Visibility change handler — fetch on focus
+		this.registerDomEvent(document, 'visibilitychange', () => {
+			if (!document.hidden && this.settings.jwtToken) {
+				this.fetchNotes().catch(() => { });
+			}
+		});
+	}
+
+	onunload() {
+		this.closeSseConnection();
+		this.stopReconnection();
+		this.stopPolling();
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
 }
 
 class VaultConflictModal extends Modal {
-  vaultName: string;
-  resId: string;
-  saveResults: (vaultName: string, vaultId: string) => Promise<void>;
-  syncVault: (vaultName: string) => Promise<void>;
+	vaultName: string;
+	resId: string;
+	saveResults: (vaultName: string, vaultId: string) => Promise<void>;
+	syncVault: (vaultName: string) => Promise<void>;
 
-  constructor(
-    app: App,
-    vaultName: string,
-    resId: string,
-    saveResults: (vaultName: string, vaultId: string) => Promise<void>,
-    syncVault: (vaultName: string) => Promise<void>
-  ) {
-    super(app);
-    this.vaultName = vaultName;
-    this.resId = resId;
-    this.saveResults = saveResults;
-    this.syncVault = syncVault;
-  }
+	constructor(
+		app: App,
+		vaultName: string,
+		resId: string,
+		saveResults: (vaultName: string, vaultId: string) => Promise<void>,
+		syncVault: (vaultName: string) => Promise<void>
+	) {
+		super(app);
+		this.vaultName = vaultName;
+		this.resId = resId;
+		this.saveResults = saveResults;
+		this.syncVault = syncVault;
+	}
 
-  onOpen() {
-    const { contentEl } = this;
+	onOpen() {
+		const { contentEl } = this;
 
-    const style = document.createElement('style');
-    style.textContent = `
+		const style = document.createElement('style');
+		style.textContent = `
       button{
       cursor: pointer;
       margin: 5px
       }
     `;
-    contentEl.appendChild(style);
+		contentEl.appendChild(style);
 
-    contentEl.createEl('h2', { text: 'Epiphany vault conflict detected' });
+		contentEl.createEl('h2', { text: 'Epiphany vault conflict detected' });
 
-    contentEl.createEl('p', {
-      text: `While trying to sync your vault, we found a vault with the name "${this.vaultName}" already existing.`,
-    });
+		contentEl.createEl('p', {
+			text: `While trying to sync your vault, we found a vault with the name "${this.vaultName}" already existing.`,
+		});
 
-    const option1 = contentEl.createEl('button', {
-      text: 'Sync with existing vault',
-    });
-    option1.onclick = async () => {
-      new Notice('Syncing with existing vault...');
-      this.saveResults(this.vaultName, this.resId);
-      this.close();
-    };
+		const option1 = contentEl.createEl('button', {
+			text: 'Sync with existing vault',
+		});
+		option1.onclick = async () => {
+			new Notice('Syncing with existing vault...');
+			this.saveResults(this.vaultName, this.resId);
+			this.close();
+		};
 
-    const option2 = contentEl.createEl('button', {
-      text: 'Create new vault with different name',
-    });
-    option2.onclick = () => {
-      this.showVaultNameInput();
-    };
-  }
+		const option2 = contentEl.createEl('button', {
+			text: 'Create new vault with different name',
+		});
+		option2.onclick = () => {
+			this.showVaultNameInput();
+		};
+	}
 
-  showVaultNameInput() {
-    const { contentEl } = this;
-    contentEl.empty();
+	showVaultNameInput() {
+		const { contentEl } = this;
+		contentEl.empty();
 
-    contentEl.createEl('h2', { text: 'Create new vault' });
+		contentEl.createEl('h2', { text: 'Create new vault' });
 
-    const input = contentEl.createEl('input', {
-      type: 'text',
-      placeholder: 'Enter new vault name',
-    });
+		const input = contentEl.createEl('input', {
+			type: 'text',
+			placeholder: 'Enter new vault name',
+		});
 
-    const submitBtn = contentEl.createEl('button', { text: 'Create vault' });
-    submitBtn.onclick = () => {
-      const newName = input.value;
-      if (newName) {
-        new Notice(`Creating vault with name: ${newName}`);
-        this.syncVault(newName);
-        this.close();
-      } else {
-        new Notice('Please enter a valid vault name.');
-      }
-    };
-  }
+		const submitBtn = contentEl.createEl('button', { text: 'Create vault' });
+		submitBtn.onclick = () => {
+			const newName = input.value;
+			if (newName) {
+				new Notice(`Creating vault with name: ${newName}`);
+				this.syncVault(newName);
+				this.close();
+			} else {
+				new Notice('Please enter a valid vault name.');
+			}
+		};
+	}
 
-  onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
-  }
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
 }
 
 class EpiphanySettingTab extends PluginSettingTab {
-  private plugin: EpiphanyPlugin;
-  private email: string;
-  private authRequestId: string | null = null;
-  private otp: string | null = null;
+	private plugin: EpiphanyPlugin;
+	private email: string;
+	private authRequestId: string | null = null;
+	private otp: string | null = null;
 
-  constructor(app: App, plugin: EpiphanyPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-    this.email = plugin.settings.email ?? '';
-  }
+	constructor(app: App, plugin: EpiphanyPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+		this.email = plugin.settings.email ?? '';
+	}
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
 
-    new Setting(containerEl)
-      .setName('Email')
-      .setDesc('Enter your Epiphany account email address.')
-      .addText((text) =>
-        text
-          .setPlaceholder('Enter email')
-          .setValue(this.email)
-          .onChange(async (value) => {
-            this.email = value;
-          })
-      )
-      .addButton((button) => {
-        button.setButtonText('Send authorization email').onClick(async () => {
-          await this.handleEmailSubmit(this.email);
-          this.refreshScreen();
-        });
-      });
+		new Setting(containerEl)
+			.setName('Email')
+			.setDesc('Enter your Epiphany account email address.')
+			.addText((text) =>
+				text
+					.setPlaceholder('Enter email')
+					.setValue(this.email)
+					.onChange(async (value) => {
+						this.email = value;
+					})
+			)
+			.addButton((button) => {
+				button.setButtonText('Send authorization email').onClick(async () => {
+					await this.handleEmailSubmit(this.email);
+					this.refreshScreen();
+				});
+			});
 
-    if (this.authRequestId) {
-      new Setting(containerEl)
-        .setName('One Time Password')
-        .setDesc('Please check your inbox.')
-        .addText((text) =>
-          text
-            .setPlaceholder('Enter code')
-            .setValue(this.otp ?? '')
-            .onChange((value) => {
-              this.otp = value;
-            })
-        )
-        .addButton((button) => {
-          button.setButtonText('Verify').onClick(async () => {
-            await this.handleOTPSubmit(this.otp);
-            this.refreshScreen();
-          });
-        });
-    }
-  }
+		if (this.authRequestId) {
+			new Setting(containerEl)
+				.setName('One Time Password')
+				.setDesc('Please check your inbox.')
+				.addText((text) =>
+					text
+						.setPlaceholder('Enter code')
+						.setValue(this.otp ?? '')
+						.onChange((value) => {
+							this.otp = value;
+						})
+				)
+				.addButton((button) => {
+					button.setButtonText('Verify').onClick(async () => {
+						await this.handleOTPSubmit(this.otp);
+						this.refreshScreen();
+					});
+				});
+		}
+	}
 
-  private refreshScreen() {
-    this.display();
-  }
+	private refreshScreen() {
+		this.display();
+	}
 
-  private async handleEmailSubmit(emailAddress: string | null) {
-    this.authRequestId = null;
+	private async handleEmailSubmit(emailAddress: string | null) {
+		this.authRequestId = null;
 
-    if (!emailAddress) {
-      new Notice('No email found. Please enter email address.');
-      return;
-    }
+		if (!emailAddress) {
+			new Notice('No email found. Please enter email address.');
+			return;
+		}
 
-    new Notice('Sending email...');
+		new Notice('Sending email...');
 
-    const url = `${this.plugin.settings.baseUrl}/api/auth/login`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email: emailAddress }),
-    };
+		const url = `${this.plugin.settings.baseUrl}/api/auth/login`;
+		const options: RequestUrlParam = {
+			url: url,
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Plugin-Version': this.plugin.manifest.version,
+			},
+			body: JSON.stringify({ email: emailAddress }),
+		};
 
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
+		try {
+			const response = await request(options);
+			const res = JSON.parse(response);
 
-      if (res.error) {
-        throw new Error(res.message);
-      }
-      this.authRequestId = res.auth_request_id;
+			if (res.error) {
+				throw new Error(res.message);
+			}
+			this.authRequestId = res.auth_request_id;
 
-      // update email
-      this.plugin.settings.email = emailAddress;
-      await this.plugin.saveSettings();
+			// update email
+			this.plugin.settings.email = emailAddress;
+			await this.plugin.saveSettings();
 
-      new Notice('OTP sent to your email.');
-    } catch (err) {
-      new Notice(err.message || 'Unknown error');
-    }
-  }
+			new Notice('OTP sent to your email.');
+		} catch (err) {
+			new Notice('Epiphany: Something went wrong, please try again later.', 5000);
+		}
+	}
 
-  private async handleOTPSubmit(code: string | null) {
-    if (!this.authRequestId) {
-      new Notice('No auth request ID found. Please start the process again.');
-      return;
-    }
+	private async handleOTPSubmit(code: string | null) {
+		if (!this.authRequestId) {
+			new Notice('No auth request ID found. Please start the process again.');
+			return;
+		}
 
-    if (!code) {
-      new Notice('Please enter code.');
-      return;
-    }
+		if (!code) {
+			new Notice('Please enter code.');
+			return;
+		}
 
-    new Notice('Verifying...');
+		new Notice('Verifying...');
 
-    const url = `${this.plugin.settings.baseUrl}/api/auth/verify-code`;
-    const options: RequestUrlParam = {
-      url: url,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ auth_request_id: this.authRequestId, code: code }),
-    };
+		const url = `${this.plugin.settings.baseUrl}/api/auth/verify-code`;
+		const options: RequestUrlParam = {
+			url: url,
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-Plugin-Version': this.plugin.manifest.version,
+			},
+			body: JSON.stringify({ auth_request_id: this.authRequestId, code: code }),
+		};
 
-    try {
-      const response = await request(options);
-      const res = JSON.parse(response);
+		try {
+			const response = await request(options);
+			const res = JSON.parse(response);
 
-      if (res.error) {
-        throw new Error(res.message);
-      }
+			if (res.error) {
+				throw new Error(res.message);
+			}
 
-      this.plugin.settings.jwtToken = res.jwt_token;
-      await this.plugin.saveSettings();
+			this.plugin.settings.jwtToken = res.jwt_token;
+			await this.plugin.saveSettings();
 
-      this.authRequestId = null;
-      this.otp = null;
+			this.authRequestId = null;
+			this.otp = null;
 
-      new Notice('Login successful!');
-    } catch (err) {
-      if (err?.status === 400) {
-        new Notice('Password is incorrect.');
-      } else {
-        new Notice(err?.message || 'Unknown error');
-      }
-    }
+			new Notice('Login successful!');
+		} catch (err) {
+			if ((err as any)?.status === 400) {
+				new Notice('Password is incorrect.');
+			} else {
+				new Notice('Epiphany: Something went wrong, please try again later.', 5000);
+			}
+		}
 
-    if (!this.plugin.settings.vaultId && !this.plugin.settings.vaultName) {
-      await this.plugin.syncVault();
-    }
-  }
+		if (!this.plugin.settings.vaultId && !this.plugin.settings.vaultName) {
+			await this.plugin.syncVault();
+		}
+
+		// 2.6: Initialize SSE connection after successful auth
+		if (this.plugin.settings.jwtToken) {
+			this.plugin.initSseConnection().catch(() => { });
+		}
+	}
 }
