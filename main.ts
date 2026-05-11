@@ -65,6 +65,12 @@ export default class EpiphanyPlugin extends Plugin {
 	private reconnectDelay = 1000;
 	private pollingInterval: number | null = null;
 	private isFetching = false;
+	private lastFetchAt = 0;
+	private static readonly FETCH_DEBOUNCE_MS = 5000;
+
+	private static isHttpStatus(err: unknown, code: number): boolean {
+		return typeof err === 'object' && err !== null && (err as { status?: number }).status === code;
+	}
 
 
 	// --- Common headers helper ---
@@ -80,13 +86,18 @@ export default class EpiphanyPlugin extends Plugin {
 
 	// --- Core sync methods ---
 
-	async fetchNotes() {
+	async fetchNotes(opts: { force?: boolean } = {}) {
 		if (this.isFetching) return;
+		if (!opts.force) {
+			const now = Date.now();
+			if (now - this.lastFetchAt < EpiphanyPlugin.FETCH_DEBOUNCE_MS) return;
+		}
 		this.isFetching = true;
+		this.lastFetchAt = Date.now();
 		try {
 			const vaultName = this.settings.vaultName;
 			if (vaultName) {
-				const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${vaultName}`;
+				const url = `${this.settings.baseUrl}/api/uploads/obsidian?vaultName=${encodeURIComponent(vaultName)}`;
 				const options: RequestUrlParam = {
 					url: url,
 					method: 'GET',
@@ -99,10 +110,6 @@ export default class EpiphanyPlugin extends Plugin {
 					const res = JSON.parse(response);
 
 					if (res.error) {
-						if (res.status === 429) {
-							// ignore rate limit error
-							return;
-						}
 						throw new Error(res.message);
 					}
 
@@ -190,6 +197,7 @@ export default class EpiphanyPlugin extends Plugin {
 						}
 					}
 				} catch (err) {
+					if (EpiphanyPlugin.isHttpStatus(err, 429)) return;
 					// Only show generic error if no notes synced at all
 					if (syncedCount === 0) {
 						new Notice('Epiphany: Something went wrong, please try again later.', 5000);
@@ -330,6 +338,7 @@ export default class EpiphanyPlugin extends Plugin {
 					).open();
 				}
 			} catch (err) {
+				if (EpiphanyPlugin.isHttpStatus(err, 429)) return;
 				new Notice('Epiphany: Something went wrong, please try again later.', 5000);
 			}
 		}
@@ -430,6 +439,8 @@ export default class EpiphanyPlugin extends Plugin {
 			});
 			const { ticket } = JSON.parse(ticketResponse);
 
+			this.reconnectDelay = 1000;
+
 			// Open EventSource
 			this.eventSource = new EventSource(
 				`${this.settings.baseUrl}/api/sse/sync?ticket=${ticket}`
@@ -437,13 +448,12 @@ export default class EpiphanyPlugin extends Plugin {
 
 			this.eventSource.addEventListener('connected', () => {
 				this.sseConnected = true;
-				this.reconnectDelay = 1000; // Reset backoff
 				this.stopPolling();
-				this.fetchNotes().catch(() => { }); // Catch up on any missed notes
+				this.fetchNotes({ force: true }).catch(() => { });
 			});
 
 			this.eventSource.addEventListener('sync-ready', () => {
-				this.fetchNotes().catch(() => { });
+				this.fetchNotes({ force: true }).catch(() => { });
 			});
 
 			this.eventSource.onerror = () => {
@@ -452,9 +462,12 @@ export default class EpiphanyPlugin extends Plugin {
 				this.startPolling(); // Fallback
 			};
 		} catch (err) {
-			if ((err as any)?.status === 401) {
+			if (EpiphanyPlugin.isHttpStatus(err, 401)) {
 				new Notice('Epiphany: Session expired. Please re-authenticate in settings.');
 				return; // Don't reconnect on auth failure
+			}
+			if (EpiphanyPlugin.isHttpStatus(err, 429)) {
+				this.reconnectDelay = 30000;
 			}
 			this.startReconnection();
 			this.startPolling();
