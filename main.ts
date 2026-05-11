@@ -228,7 +228,7 @@ export default class EpiphanyPlugin extends Plugin {
 		const noteText = this.getNoteTextFromUpload(upload);
 
 		try {
-			await this.writeToVault(existingFile, filePath, noteText, upload);
+			await this.writeToVault(existingFile, filePath, noteText);
 		} catch (err) {
 			// Retry once after 1 second
 			try {
@@ -236,7 +236,7 @@ export default class EpiphanyPlugin extends Plugin {
 				// Re-resolve file state after delay
 				const retryFile = this.app.vault.getFileByPath(filePath);
 				const retryNoteText = this.getNoteTextFromUpload(upload);
-				await this.writeToVault(retryFile, filePath, retryNoteText, upload);
+				await this.writeToVault(retryFile, filePath, retryNoteText);
 			} catch (retryErr) {
 				new Notice('Epiphany: Something went wrong, please try again later.', 5000);
 				// Report error to API (fire-and-forget)
@@ -250,30 +250,35 @@ export default class EpiphanyPlugin extends Plugin {
 		return true;
 	}
 
-	private async writeToVault(existingFile: TFile | null, filePath: string, noteText: string, upload: Upload) {
-		// Check filesystem directly — vault metadata cache can be stale
-		const fileExists = existingFile || await this.app.vault.adapter.exists(filePath);
-
-		if (fileExists) {
-			const existingContent = existingFile
-				? await this.app.vault.read(existingFile)
-				: await this.app.vault.adapter.read(filePath);
-
-			// Duplicate check — skip if this exact note was already appended
-			const noteTextWithoutSeparator = this.getNoteTextFromUpload(upload);
-			if (existingContent.trimEnd().endsWith(noteTextWithoutSeparator.trim())) {
-				return; // Already written
+	private async writeToVault(existingFile: TFile | null, filePath: string, noteText: string) {
+		const appendNote = (current: string): string => {
+			// Duplicate check against the *current* file content, not a buffered copy.
+			// This catches the "API re-sent the same upload after updateNote failed" retry case.
+			if (current.trimEnd().endsWith(noteText.trim())) {
+				return current;
 			}
+			const separator = current.length === 0 ? '' : '\n\n';
+			return `${current}${separator}${noteText}`;
+		};
 
-			const combinedContent = `${existingContent}\n\n${noteText}`;
-			if (existingFile) {
-				await this.app.vault.modify(existingFile, combinedContent);
-			} else {
-				await this.app.vault.adapter.write(filePath, combinedContent);
-			}
-		} else {
-			await this.app.vault.create(filePath, noteText);
+		if (existingFile) {
+			// Vault knows about the file — atomic read+write, serialised against other vault.process calls.
+			// If `appendNote` returns the same reference (duplicate), Obsidian short-circuits and writes nothing.
+			await this.app.vault.process(existingFile, appendNote);
+			return;
 		}
+
+		// Vault cache doesn't have a TFile. Check the filesystem directly — sync may have
+		// written the file before Obsidian's watcher picked it up.
+		if (await this.app.vault.adapter.exists(filePath)) {
+			// adapter.process is also documented as atomic; safer than adapter.write here.
+			await this.app.vault.adapter.process(filePath, appendNote);
+			return;
+		}
+
+		// Genuinely new file. `vault.create` throws if the file already exists,
+		// which the caller's retry handles (next attempt will see it via getFileByPath).
+		await this.app.vault.create(filePath, noteText);
 	}
 
 	// --- Sync confirmation ---
