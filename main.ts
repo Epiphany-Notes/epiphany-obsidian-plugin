@@ -8,8 +8,13 @@ import {
 	Setting,
 	TFile,
 	moment,
+	normalizePath,
 	request,
 } from 'obsidian';
+
+import { buildAppendedContent } from './src/append';
+import { ObsidianTypeKey, resolveTargetPath } from './src/note-target';
+import { parentFolders } from './src/path-utils';
 
 
 interface EpiphanySettings {
@@ -29,12 +34,6 @@ const DEFAULT_SETTINGS: EpiphanySettings = {
 	vaultName: null,
 	email: null,
 };
-
-enum ObsidianTypeKey {
-	DAILY_APPEND = 'daily-append',
-	EXISTING = 'existing',
-	NEW = 'new',
-}
 
 type Upload = {
 	id: string;
@@ -116,75 +115,19 @@ export default class EpiphanyPlugin extends Plugin {
 					const uploads = res as Array<Upload>;
 					if (uploads && uploads.length) {
 						for (const upload of uploads) {
-							const typeKey =
-								upload.typeId ??
-								(upload.createSeparate
-									? ObsidianTypeKey.NEW
-									: ObsidianTypeKey.EXISTING);
-
-							const fileData = {
-								path: '',
-							};
-
-							switch (typeKey) {
-								case ObsidianTypeKey.DAILY_APPEND: {
-									let dailyFormat = DEFAULT_DAILY_FORMAT;
-
-									const { format, folder } =
-										(this.app as any)?.internalPlugins?.plugins?.['daily-notes']
-											?.instance?.options ?? {};
-
-									if (format) {
-										const isValidFormat = !UNSUPPORTED_DAILY_FORMAT_CHARS.some(
-											(char) => (format as string).includes(char)
-										);
-
-										if (isValidFormat) {
-											dailyFormat = format;
-										}
-									}
-
-									// 2.10: Use recording date instead of current date
-									const recordedAt = upload.createdAt ? moment(upload.createdAt) : moment();
-									const dailyFileName = recordedAt.format(dailyFormat);
-
-									const dailyFolder: string = (folder as string) ?? '';
-
-									const dailyFolderFormatted =
-										dailyFolder && !dailyFolder.endsWith('/')
-											? dailyFolder + '/'
-											: dailyFolder;
-
-									fileData.path = dailyFolderFormatted + dailyFileName + '.md';
-									break;
-								}
-								case ObsidianTypeKey.EXISTING: {
-									// Strip .md if user included it
-									const rawName = upload.fileName || 'Epiphany notes';
-									const targetName = rawName.endsWith('.md') ? rawName.slice(0, -3) : rawName;
-									// Search all folders for existing note with this name
-									const match = this.app.vault.getMarkdownFiles().find(f => f.basename === targetName);
-									fileData.path = match ? match.path : targetName + '.md';
-									break;
-								}
-								case ObsidianTypeKey.NEW: {
-									const combinedFilePath = `${upload.label}.md`;
-									const combinedFile =
-										this.app.vault.getFileByPath(combinedFilePath);
-									const path = combinedFile
-										? `${upload.label} - ${upload.syncId}.md`
-										: `${upload.label}.md`;
-
-									fileData.path = path;
-									break;
-								}
-								default: {
-									throw new Error(`Unknown type key: '${typeKey}'`);
-								}
+							try {
+								const success = await this.syncSingleUpload(upload);
+								if (success) syncedCount++;
+							} catch (err) {
+								// Isolate per-upload failures: free the server-side
+								// claim so the record retries, then keep going — one
+								// bad record must not strand the rest of the batch
+								// in `syncingAt` limbo.
+								this.reportSyncError(
+									upload.id,
+									(err as Error)?.message ?? String(err)
+								).catch(() => { });
 							}
-
-							const success = await this.createOrModifyFile(upload, fileData.path);
-							if (success) syncedCount++;
 						}
 
 						if (syncedCount > 0) {
@@ -207,6 +150,44 @@ export default class EpiphanyPlugin extends Plugin {
 		} finally {
 			this.isFetching = false;
 		}
+	}
+
+	private async syncSingleUpload(upload: Upload): Promise<boolean> {
+		const typeKey =
+			upload.typeId ??
+			(upload.createSeparate ? ObsidianTypeKey.NEW : ObsidianTypeKey.EXISTING);
+
+		let dailyFormat = DEFAULT_DAILY_FORMAT;
+		const { format, folder } =
+			(this.app as any)?.internalPlugins?.plugins?.['daily-notes']?.instance
+				?.options ?? {};
+		if (format) {
+			const isValidFormat = !UNSUPPORTED_DAILY_FORMAT_CHARS.some((char) =>
+				(format as string).includes(char)
+			);
+			if (isValidFormat) {
+				dailyFormat = format;
+			}
+		}
+		// 2.10: Use recording date instead of current date
+		const recordedAt = upload.createdAt ? moment(upload.createdAt) : moment();
+
+		const targetPath = normalizePath(
+			resolveTargetPath({
+				typeKey,
+				label: upload.label,
+				syncId: upload.syncId,
+				fileName: upload.fileName,
+				dailyFileName: recordedAt.format(dailyFormat),
+				dailyFolder: (folder as string) ?? '',
+				markdownFiles: this.app.vault
+					.getMarkdownFiles()
+					.map((f) => ({ path: f.path, basename: f.basename })),
+				fileExists: (p) => this.app.vault.getFileByPath(p) !== null,
+			})
+		);
+
+		return await this.createOrModifyFile(upload, targetPath);
 	}
 
 	// --- 2.12: Markdown readability improvements ---
@@ -250,34 +231,43 @@ export default class EpiphanyPlugin extends Plugin {
 		return true;
 	}
 
-	private async writeToVault(existingFile: TFile | null, filePath: string, noteText: string) {
-		const appendNote = (current: string): string => {
-			// Duplicate check against the *current* file content, not a buffered copy.
-			// This catches the "API re-sent the same upload after updateNote failed" retry case.
-			if (current.trimEnd().endsWith(noteText.trim())) {
-				return current;
+	private async ensureFolderChain(filePath: string) {
+		for (const folder of parentFolders(filePath)) {
+			if (this.app.vault.getFolderByPath(folder)) continue;
+			try {
+				await this.app.vault.createFolder(folder);
+			} catch (err) {
+				// Race: the folder appeared between check and create (other
+				// device via Obsidian Sync, or the daily-notes plugin). Only
+				// rethrow if it's still genuinely missing.
+				if (!this.app.vault.getFolderByPath(folder)) throw err;
 			}
-			const separator = current.length === 0 ? '' : '\n\n';
-			return `${current}${separator}${noteText}`;
-		};
+		}
+	}
+
+	private async writeToVault(existingFile: TFile | null, filePath: string, noteText: string) {
+		const appendNote = (current: string) => buildAppendedContent(current, noteText);
 
 		if (existingFile) {
-			// Vault knows about the file — atomic read+write, serialised against other vault.process calls.
-			// If `appendNote` returns the same reference (duplicate), Obsidian short-circuits and writes nothing.
+			// Vault knows about the file — atomic read+write, serialised against
+			// other vault.process calls. If the append is a duplicate, the same
+			// reference comes back and Obsidian skips the disk write.
 			await this.app.vault.process(existingFile, appendNote);
 			return;
 		}
 
-		// Vault cache doesn't have a TFile. Check the filesystem directly — sync may have
-		// written the file before Obsidian's watcher picked it up.
+		// Vault cache doesn't have a TFile. Check the filesystem directly — sync
+		// may have written the file before Obsidian's watcher picked it up.
 		if (await this.app.vault.adapter.exists(filePath)) {
 			// adapter.process is also documented as atomic; safer than adapter.write here.
 			await this.app.vault.adapter.process(filePath, appendNote);
 			return;
 		}
 
-		// Genuinely new file. `vault.create` throws if the file already exists,
-		// which the caller's retry handles (next attempt will see it via getFileByPath).
+		// Genuinely new file. Parent folders must exist first — `vault.create`
+		// does NOT create them and throws instead (unsynced daily-notes folders,
+		// path-style fileNames).
+		await this.ensureFolderChain(filePath);
 		await this.app.vault.create(filePath, noteText);
 	}
 

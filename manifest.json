@@ -1,8 +1,8 @@
 {
 	"id": "epiphany",
 	"name": "Epiphany",
-	"version": "2.0.1",
-	"minAppVersion": "0.15.0",
+	"version": "2.1.0",
+	"minAppVersion": "1.5.7",
 	"description": "Capture voice notes from your iPhone and Apple Watch into Obsidian in seconds. Attach photos, links, and screenshots for context",
 	"author": "Epiphany",
 	"authorUrl": "https://epiphanyvoice.io",
