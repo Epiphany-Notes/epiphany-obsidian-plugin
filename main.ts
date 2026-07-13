@@ -46,6 +46,7 @@ type Upload = {
 	createSeparate?: boolean;
 	typeId?: ObsidianTypeKey;
 	fileName: string;
+	folderPath?: string;
 	vaultPath: string;
 	includeAudioAttachment: boolean;
 	includeTitle: boolean;
@@ -178,6 +179,7 @@ export default class EpiphanyPlugin extends Plugin {
 				label: upload.label,
 				syncId: upload.syncId,
 				fileName: upload.fileName,
+				folderPath: upload.folderPath,
 				dailyFileName: recordedAt.format(dailyFormat),
 				dailyFolder: (folder as string) ?? '',
 				markdownFiles: this.app.vault

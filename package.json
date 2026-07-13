@@ -1,6 +1,6 @@
 {
 	"name": "epiphany-plugin",
-	"version": "2.1.0",
+	"version": "2.2.0",
 	"description": "Voice note capture and sync plugin for Obsidian. Dictate from iPhone and Apple Watch with photo and link attachments",
 	"main": "main.js",
 	"scripts": {

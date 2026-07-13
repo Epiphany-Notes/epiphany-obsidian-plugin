@@ -13,6 +13,9 @@ export type TargetInput = {
 	label?: string;
 	syncId: string;
 	fileName?: string;
+	// Destination-configured folder (NEW/EXISTING only; daily-append's
+	// location is governed by the user's daily-notes plugin config).
+	folderPath?: string;
 	dailyFileName: string;
 	dailyFolder: string;
 	markdownFiles: VaultFileRef[];
@@ -46,6 +49,13 @@ export function resolveTargetPath(input: TargetInput): string {
 		case ObsidianTypeKey.EXISTING: {
 			const raw = (input.fileName ?? '').trim() || 'Epiphany notes';
 			const stripped = raw.endsWith('.md') ? raw.slice(0, -3) : raw;
+			const folder = (input.folderPath ?? '').trim();
+			if (folder.length) {
+				// Destination pins the folder — exact path, no basename
+				// search. A slash-y fileName (legacy de-facto folder trick)
+				// composes by joining underneath it.
+				return sanitizePath(folder + '/' + stripped) + '.md';
+			}
 			if (stripped.includes('/')) {
 				// Explicit path (users rely on this as a de-facto folder
 				// feature) — no basename search.
@@ -59,9 +69,11 @@ export function resolveTargetPath(input: TargetInput): string {
 		}
 		case ObsidianTypeKey.NEW: {
 			const baseName = sanitizeFileName(input.label ?? '');
-			const primary = baseName + '.md';
+			const folder = (input.folderPath ?? '').trim();
+			const prefix = folder.length ? sanitizePath(folder) + '/' : '';
+			const primary = prefix + baseName + '.md';
 			return input.fileExists(primary)
-				? `${baseName} - ${input.syncId}.md`
+				? `${prefix}${baseName} - ${input.syncId}.md`
 				: primary;
 		}
 		default: {

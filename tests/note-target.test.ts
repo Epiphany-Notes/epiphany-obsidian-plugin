@@ -114,3 +114,82 @@ describe('unknown type', () => {
 		);
 	});
 });
+
+describe('folderPath', () => {
+	it('NEW: creates the note inside the folder', () => {
+		expect(
+			resolveTargetPath(
+				base({ label: 'Groceries', folderPath: 'Projects/Voice Notes' })
+			)
+		).toBe('Projects/Voice Notes/Groceries.md');
+	});
+
+	it('NEW: collision suffix stays inside the folder', () => {
+		expect(
+			resolveTargetPath(
+				base({
+					label: 'Groceries',
+					folderPath: 'Projects',
+					fileExists: (p) => p === 'Projects/Groceries.md',
+				})
+			)
+		).toBe('Projects/Groceries - sync-1.md');
+	});
+
+	it('NEW: sanitizes both the folder segments and the label', () => {
+		expect(
+			resolveTargetPath(base({ label: 'a:b', folderPath: ' Ideas? / drafts ' }))
+		).toBe('Ideas-/drafts/a-b.md');
+	});
+
+	it('EXISTING: targets exactly folder/fileName.md — no basename search', () => {
+		expect(
+			resolveTargetPath(
+				base({
+					typeKey: ObsidianTypeKey.EXISTING,
+					fileName: 'Inbox',
+					folderPath: 'Projects',
+					// a root-level "Inbox.md" exists but must NOT win:
+					markdownFiles: [{ path: 'Inbox.md', basename: 'Inbox' }],
+				})
+			)
+		).toBe('Projects/Inbox.md');
+	});
+
+	it('EXISTING: slash fileName composes with the folder (legacy trick preserved)', () => {
+		expect(
+			resolveTargetPath(
+				base({
+					typeKey: ObsidianTypeKey.EXISTING,
+					fileName: 'sub/Inbox.md',
+					folderPath: 'Projects',
+				})
+			)
+		).toBe('Projects/sub/Inbox.md');
+	});
+
+	it('EXISTING: empty folderPath keeps legacy search-anywhere behavior', () => {
+		expect(
+			resolveTargetPath(
+				base({
+					typeKey: ObsidianTypeKey.EXISTING,
+					fileName: 'Inbox',
+					folderPath: '',
+					markdownFiles: [{ path: 'somewhere/Inbox.md', basename: 'Inbox' }],
+				})
+			)
+		).toBe('somewhere/Inbox.md');
+	});
+
+	it('DAILY_APPEND: ignores folderPath entirely', () => {
+		expect(
+			resolveTargetPath(
+				base({
+					typeKey: ObsidianTypeKey.DAILY_APPEND,
+					dailyFolder: 'Journal',
+					folderPath: 'Projects',
+				})
+			)
+		).toBe('Journal/2026-07-09.md');
+	});
+});
