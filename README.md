@@ -44,7 +44,7 @@ That's it. No manual steps in between.
 
 Setup takes about two minutes:
 
-1. Install the [Epiphany app](https://apps.apple.com/app/epiphany-voice/id6449386083) on your iPhone
+1. Install the [Epiphany app](https://apps.apple.com/app/id6449943220) on your iPhone
 2. In Obsidian, go to **Settings > Community plugins > Browse** and search for "Epiphany"
 3. Install and enable the plugin
 4. When prompted, enter the email associated with your Epiphany account
